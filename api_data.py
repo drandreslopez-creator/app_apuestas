@@ -144,6 +144,50 @@ def _cargar_cache_partidos():
         return pd.DataFrame()
 
 
+def _enriquecer_odds_desde_cache(df_partidos):
+    if df_partidos is None or df_partidos.empty or "fuente_cuotas" not in df_partidos.columns:
+        return df_partidos
+
+    df_cache = _cargar_cache_partidos()
+    if df_cache.empty:
+        return df_partidos
+
+    cache_util = df_cache.copy()
+    cache_util = cache_util[cache_util["fuente_cuotas"].fillna("").isin(["the_odds_api", "espn_odds", "api_football_odds", "api_football_odds_live"])]
+    if cache_util.empty:
+        return df_partidos
+
+    df_result = df_partidos.copy()
+    for idx in df_result.index[df_result["fuente_cuotas"].fillna("").eq("fallback")]:
+        row = df_result.loc[idx]
+        fixture_id = str(row.get("fixture_id") or "").strip()
+        partido = f"{_texto_seguro(row.get('local'))} vs {_texto_seguro(row.get('visitante'))}".strip()
+
+        match = pd.DataFrame()
+        if fixture_id:
+            match = cache_util[cache_util["fixture_id"].astype(str).eq(fixture_id)]
+        if match.empty and partido:
+            match = cache_util[(cache_util["local"].astype(str) + " vs " + cache_util["visitante"].astype(str)).eq(partido)]
+        if match.empty:
+            continue
+
+        mejor = match.iloc[0]
+        cuota_local = _to_float_safe(mejor.get("cuota_local"))
+        cuota_empate = _to_float_safe(mejor.get("cuota_empate"))
+        cuota_visitante = _to_float_safe(mejor.get("cuota_visitante"))
+        if not cuota_local or not cuota_visitante or not cuota_empate:
+            continue
+
+        df_result.at[idx, "cuota_local"] = cuota_local
+        df_result.at[idx, "cuota_empate"] = cuota_empate
+        df_result.at[idx, "cuota_visitante"] = cuota_visitante
+        df_result.at[idx, "fuente_cuotas"] = str(mejor.get("fuente_cuotas") or "cache_odds")
+        df_result.at[idx, "market_match_score"] = max(_to_float_safe(mejor.get("market_match_score"), 0.7), 0.7)
+        df_result.at[idx, "bookmaker_count"] = max(int(_to_float_safe(mejor.get("bookmaker_count"), 1) or 1), 1)
+
+    return df_result
+
+
 def _american_to_decimal(odds_value):
     if odds_value in (None, ""):
         return None
@@ -808,13 +852,27 @@ def buscar_resultado_partido(fecha=None, fixture_id=None, partido=None):
             return match
 
     if fecha and partido:
-        match = _buscar_resultado_api_por_fecha_partido(fecha, partido)
-        if match:
-            return match
+        fechas_prueba = []
+        try:
+            fecha_base = pd.to_datetime(fecha, errors="coerce")
+            if pd.notna(fecha_base):
+                fechas_prueba = [
+                    (fecha_base + pd.Timedelta(days=delta)).strftime("%Y-%m-%d")
+                    for delta in (0, -1, 1)
+                ]
+        except Exception:
+            fechas_prueba = []
+        if not fechas_prueba:
+            fechas_prueba = [str(fecha)]
 
-        match = _buscar_resultado_espn_por_fecha_partido(fecha, partido)
-        if match:
-            return match
+        for fecha_test in fechas_prueba:
+            match = _buscar_resultado_api_por_fecha_partido(fecha_test, partido)
+            if match:
+                return match
+
+            match = _buscar_resultado_espn_por_fecha_partido(fecha_test, partido)
+            if match:
+                return match
 
     df_cache = _cargar_cache_partidos()
     if df_cache.empty or not partido:
@@ -1360,6 +1418,7 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
         df_partidos = pd.DataFrame(partidos)
         if not df_partidos.empty:
             df_partidos = _enriquecer_odds_desde_espn(df_partidos, fecha=fecha)
+            df_partidos = _enriquecer_odds_desde_cache(df_partidos)
             _guardar_cache_partidos(df_partidos)
             if api_errors:
                 _set_last_api_status(

@@ -211,6 +211,9 @@ def calcular_ajustes_contexto(row, calibracion):
         "edge_delta": 0.0,
         "confianza_delta": 0,
         "stake_factor": 1.0,
+        "aprendizaje_score": 0.0,
+        "aprendizaje_favorable": False,
+        "aprendizaje_desfavorable": False,
         "motivos": [],
     }
 
@@ -221,6 +224,7 @@ def calcular_ajustes_contexto(row, calibracion):
         ("grupo_liga", row.get("grupo_liga")),
         ("mercado", row.get("mercado_historial")),
         ("fuente_cuotas", row.get("fuente_cuotas")),
+        ("contexto_partido", row.get("contexto_partido")),
         ("prediccion_simple", row.get("prediccion_simple")),
         ("decision_simple", row.get("decision_simple")),
         ("ai_decision", row.get("ai_decision")),
@@ -234,14 +238,29 @@ def calcular_ajustes_contexto(row, calibracion):
         ajustes["edge_delta"] += perfil.get("edge_delta", 0.0)
         ajustes["confianza_delta"] += perfil.get("confianza_delta", 0)
         ajustes["stake_factor"] *= perfil.get("stake_factor", 1.0)
+        risk_level = perfil.get("risk_level", "neutro")
+        sample_size = int(perfil.get("sample_size", 0) or 0)
+        if sample_size >= 6:
+            if risk_level == "favorable":
+                ajustes["aprendizaje_score"] += 1.2
+            elif risk_level == "medio":
+                ajustes["aprendizaje_score"] -= 0.25
+            elif risk_level == "alto":
+                ajustes["aprendizaje_score"] -= 1.0
+        elif sample_size >= 4:
+            if risk_level == "favorable":
+                ajustes["aprendizaje_score"] += 0.4
+            elif risk_level == "alto":
+                ajustes["aprendizaje_score"] -= 0.4
         ajustes["motivos"].append(
-            f"{tipo}: {valor} ({perfil.get('risk_level', 'neutro')})"
+            f"{tipo}: {valor} ({risk_level})"
         )
 
     if row.get("fuente_cuotas") == "fallback":
         ajustes["edge_delta"] += 0.015
         ajustes["confianza_delta"] -= 5
         ajustes["stake_factor"] *= 0.7
+        ajustes["aprendizaje_score"] -= 0.4
         ajustes["motivos"].append("cuotas fallback")
 
     prioridad = row.get("prioridad_liga", 0) or 0
@@ -249,8 +268,11 @@ def calcular_ajustes_contexto(row, calibracion):
         ajustes["edge_delta"] += 0.005
         ajustes["confianza_delta"] -= 2
         ajustes["stake_factor"] *= 0.9
+        ajustes["aprendizaje_score"] -= 0.15
         ajustes["motivos"].append("liga fuera del grupo premium")
 
+    ajustes["aprendizaje_favorable"] = ajustes["aprendizaje_score"] >= 1.0
+    ajustes["aprendizaje_desfavorable"] = ajustes["aprendizaje_score"] <= -1.6
     return ajustes
 
 
@@ -291,13 +313,17 @@ def calcular_ai_score(row_dict):
     estado = row_dict.get("estado")
     trampa = bool(row_dict.get("trampa"))
     contexto = _contexto_competitivo(row_dict)
+    consenso = _consenso_analitico(row_dict)
     calidad_mercado, bonus_mercado = _calidad_mercado(row_dict)
+    aprendizaje_score = float(row_dict.get("aprendizaje_score", 0) or 0)
 
     score += (confianza - 50) * 0.8
     score += mejor_edge * 220
     score += min(prioridad_liga / 8, 12)
     score += contexto["score"] * 3.5
+    score += consenso["score"] * 3.0
     score += bonus_mercado
+    score += aprendizaje_score * 1.8
 
     if ganador == "No bet":
         score -= 35
@@ -311,6 +337,10 @@ def calcular_ai_score(row_dict):
         score -= 12
     if calidad_mercado == "debil":
         score -= 4
+    if consenso["nivel"] == "bajo":
+        score -= 6
+    elif consenso["nivel"] == "alto":
+        score += 4
 
     if row_dict.get("value_local") == "🔥 VALUE ALTO" or row_dict.get("value_visitante") == "🔥 VALUE ALTO":
         score += 8
@@ -345,6 +375,7 @@ def etiquetar_ai_decision(ai_score):
 def resumir_ai_decision(row_dict):
     motivos = []
     calidad_mercado, _ = _calidad_mercado(row_dict)
+    consenso = _consenso_analitico(row_dict)
     if calidad_mercado == "fuerte":
         motivos.append("mercado fuerte")
     elif calidad_mercado == "aceptable":
@@ -368,6 +399,12 @@ def resumir_ai_decision(row_dict):
 
     if row_dict.get("trampa"):
         motivos.append("señal de trampa")
+    if consenso["nivel"] == "alto":
+        motivos.append("señales alineadas")
+    elif consenso["nivel"] == "bajo":
+        motivos.append("señales en contra")
+    elif consenso["nivel"] == "mixto":
+        motivos.append("señales mixtas")
 
     return ", ".join(motivos)
 
@@ -644,6 +681,77 @@ def _contexto_competitivo(row_dict):
     }
 
 
+def _consenso_analitico(row_dict):
+    contexto = _contexto_competitivo(row_dict)
+    calidad_mercado, _ = _calidad_mercado(row_dict)
+    live = _es_partido_en_vivo(row_dict)
+    lado_predicho = contexto["lado_predicho"]
+    lado_marcador = _lado_marcador(row_dict)
+
+    a_favor = 0
+    en_contra = 0
+    notas = []
+
+    if contexto["lado_momento"] == lado_predicho and lado_predicho != "empate":
+        a_favor += 1
+        notas.append("momento")
+    elif contexto["lado_momento"] and contexto["lado_momento"] != lado_predicho and lado_predicho != "empate":
+        en_contra += 1
+
+    if contexto["apoyo_mercado"] == "a_favor":
+        a_favor += 1
+        notas.append("mercado")
+    elif contexto["apoyo_mercado"] == "en_contra":
+        en_contra += 1
+
+    if contexto["lado_goleador"] == lado_predicho and lado_predicho != "empate":
+        a_favor += 1
+        notas.append("peso ofensivo")
+    elif contexto["lado_goleador"] and contexto["lado_goleador"] != lado_predicho and lado_predicho != "empate":
+        en_contra += 1
+
+    if contexto["lado_bajas"] and lado_predicho != "empate":
+        if contexto["lado_bajas"] == lado_predicho:
+            en_contra += 1
+        else:
+            a_favor += 1
+            notas.append("bajas rivales")
+
+    if contexto["alineacion_confirmada"] and contexto["once_confirmado_local"] and contexto["once_confirmado_visitante"]:
+        a_favor += 0.5
+        notas.append("onces confirmados")
+
+    if live and lado_predicho != "empate":
+        if lado_marcador == lado_predicho:
+            a_favor += 1
+            notas.append("marcador acompaña")
+        elif lado_marcador != "empate":
+            en_contra += 1
+
+    if calidad_mercado == "fuerte":
+        a_favor += 0.5
+    elif calidad_mercado == "debil":
+        en_contra += 0.5
+
+    score = round(a_favor - en_contra, 2)
+    if score >= 2:
+        nivel = "alto"
+    elif score >= 0.75:
+        nivel = "medio"
+    elif score <= -1.5:
+        nivel = "bajo"
+    else:
+        nivel = "mixto"
+
+    return {
+        "score": score,
+        "nivel": nivel,
+        "a_favor": a_favor,
+        "en_contra": en_contra,
+        "notas": notas[:3],
+    }
+
+
 def decision_simple(row_dict):
     if row_dict.get("trampa"):
         return "Evitar"
@@ -664,7 +772,11 @@ def decision_simple(row_dict):
     apoyo_mercado = contexto["apoyo_mercado"]
     alertas = set(contexto["alertas"])
     calidad_mercado, mercado_bonus = _calidad_mercado(row_dict)
+    consenso = _consenso_analitico(row_dict)
     prioridad_liga = float(row_dict.get("prioridad_liga", 0) or 0)
+    aprendizaje_score = float(row_dict.get("aprendizaje_score", 0) or 0)
+    aprendizaje_favorable = bool(row_dict.get("aprendizaje_favorable", False))
+    aprendizaje_desfavorable = bool(row_dict.get("aprendizaje_desfavorable", False))
     lectura_limpia = (
         lado_predicho != "empate" and
         "momento_en_contra" not in alertas and
@@ -699,6 +811,9 @@ def decision_simple(row_dict):
         mercado_no_contradice
     )
 
+    if (aprendizaje_desfavorable or consenso["nivel"] == "bajo") and calidad_mercado == "debil" and not live:
+        return "Evitar"
+
     if prediccion == "Empate" and prob_top < 36:
         return "Evitar"
 
@@ -711,7 +826,7 @@ def decision_simple(row_dict):
         if lado_marcador == lado_predicho:
             if puede_apostar and gl == gv == 0 and contexto["score"] >= 2 and prob_top >= 56 and lectura_limpia and calidad_mercado != "debil":
                 return "Apostar"
-            if puede_apostar and abs(gl - gv) >= 1 and contexto["score"] >= 2 and prob_top >= 54 and lectura_limpia and mercado_no_contradice:
+            if puede_apostar and abs(gl - gv) >= 1 and contexto["score"] >= 2 and prob_top >= 54 and lectura_limpia and mercado_no_contradice and consenso["score"] >= 1:
                 return "Apostar"
             return "Mirar"
 
@@ -731,7 +846,8 @@ def decision_simple(row_dict):
         confianza >= 64 and
         contexto["score"] >= 2 and
         lectura_limpia and
-        apoyo_mercado == "a_favor"
+        apoyo_mercado == "a_favor" and
+        consenso["score"] >= 1.5
     ):
         return "Apostar"
 
@@ -743,7 +859,8 @@ def decision_simple(row_dict):
         mercado_aceptable and
         lectura_limpia and
         mercado_no_contradice and
-        contexto["score"] >= 1
+        contexto["score"] >= 1 and
+        consenso["score"] >= 0.75
     ):
         return "Apostar"
 
@@ -765,7 +882,8 @@ def decision_simple(row_dict):
         apoyo_mercado in {"a_favor", "dudoso"} and
         ai_score >= 62 and
         lectura_limpia and
-        calidad_mercado != "debil"
+        calidad_mercado != "debil" and
+        consenso["score"] >= 0.75
     ):
         return "Apostar"
 
@@ -809,10 +927,22 @@ def decision_simple(row_dict):
     if puede_apostar and calidad_mercado == "debil" and oportunidad_premium:
         return "Apostar"
 
-    if prediccion != "Empate" and prob_top >= 52 and ventaja >= 4 and contexto["score"] + mercado_bonus >= 0:
+    if puede_apostar and aprendizaje_favorable and (
+        prediccion != "Empate" and
+        prob_top >= 52 and
+        ventaja >= 4 and
+        confianza >= 56 and
+        contexto["score"] >= 2 and
+        lectura_limpia and
+        mercado_no_contradice and
+        consenso["score"] >= 1
+    ):
+        return "Apostar"
+
+    if prediccion != "Empate" and prob_top >= 52 and ventaja >= 4 and contexto["score"] + mercado_bonus >= 0 and consenso["score"] >= 0:
         return "Mirar"
 
-    if prob_top >= 50 and ai_score >= 48 and mercado_aceptable:
+    if prob_top >= 50 and ai_score >= 48 and (mercado_aceptable or aprendizaje_score >= 0.8):
         return "Mirar"
 
     if prediccion != "Empate" and prob_top >= 49 and (ventaja >= 5 or diff_ppm >= 0.3 or contexto["score"] >= 1):
@@ -969,7 +1099,11 @@ def disciplina_simple(row_dict):
     lado_marcador = _lado_marcador(row_dict)
     lado_predicho = contexto["lado_predicho"]
     calidad_mercado, _ = _calidad_mercado(row_dict)
+    consenso = _consenso_analitico(row_dict)
     prioridad_liga = float(row_dict.get("prioridad_liga", 0) or 0)
+    aprendizaje_score = float(row_dict.get("aprendizaje_score", 0) or 0)
+    aprendizaje_favorable = bool(row_dict.get("aprendizaje_favorable", False))
+    aprendizaje_desfavorable = bool(row_dict.get("aprendizaje_desfavorable", False))
     premium_contexto = prioridad_liga >= 85 and contexto["diff_ppm"] >= 0.24
 
     lectura_fuerte = (
@@ -1009,6 +1143,9 @@ def disciplina_simple(row_dict):
     mercado_verificado = apoyo_mercado == "a_favor"
     mercado_neutro = apoyo_mercado in {"a_favor", "dudoso"}
 
+    if (aprendizaje_desfavorable or consenso["nivel"] == "bajo") and calidad_mercado == "debil":
+        return "No tocar"
+
     if row_dict.get("ganador") == "No bet":
         if decision == "Mirar":
             if (
@@ -1026,7 +1163,7 @@ def disciplina_simple(row_dict):
     if decision == "Apostar":
         if lectura_fuerte and not live:
             return "Apuesta fuerte"
-        if lectura_apostable and (mercado_verificado or premium_contexto):
+        if lectura_apostable and (mercado_verificado or premium_contexto or aprendizaje_favorable) and consenso["score"] >= 0.75:
             return "Apuesta pequeña"
         if calidad_mercado in {"fuerte", "aceptable"} and contexto["score"] >= 2 and confianza >= 56:
             return "Apuesta pequeña"
@@ -1042,7 +1179,8 @@ def disciplina_simple(row_dict):
                 mercado_neutro and
                 "lectura_fragil" not in alertas and
                 "rotacion_en_contra" not in alertas and
-                "bajas_en_contra" not in alertas
+                "bajas_en_contra" not in alertas and
+                consenso["score"] >= 0.5
             ):
                 return "Entrada pequeña"
             if (
@@ -1056,10 +1194,11 @@ def disciplina_simple(row_dict):
         if (
             lectura_pequena and
             prob_top >= 52 and
-            mercado_neutro and
+            (mercado_neutro or aprendizaje_score >= 1.0) and
             "momento_en_contra" not in alertas and
             "rotacion_en_contra" not in alertas and
-            "bajas_en_contra" not in alertas
+            "bajas_en_contra" not in alertas and
+            consenso["score"] >= 0.5
         ):
             return "Entrada pequeña"
         if (
@@ -1332,6 +1471,12 @@ def analizar_partidos(df, calibracion=None):
             "Gana local" if mejor == "Local" else "Gana visitante" if mejor == "Visitante" else "Empate",
             "Over 2.5" if over > 0.55 else "Under 2.5" if under > 0.55 else "Línea dudosa",
         )
+        row["contexto_partido"] = (
+            "En vivo" if str(row.get("estado_partido", "")).upper() in {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
+            else "Prepartido" if str(row.get("estado_partido", "")).upper() in {"NS", "TBD", "PST"}
+            else "Finalizado" if str(row.get("estado_partido", "")).upper() in {"FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}
+            else "Sin dato"
+        )
         row["banda_edge"] = clasificar_banda_edge(mejor_edge_pct)
         row["banda_confianza"] = clasificar_banda_confianza(calcular_confianza(prob))
         row["prediccion_simple"] = (
@@ -1526,11 +1671,18 @@ def analizar_partidos(df, calibracion=None):
             "banda_confianza": row.get("banda_confianza"),
             "banda_edge": row.get("banda_edge"),
             "ajustes_modelo": " | ".join(ajustes_contexto["motivos"]) if ajustes_contexto["motivos"] else "Base",
+            "aprendizaje_score": round(float(ajustes_contexto.get("aprendizaje_score", 0.0) or 0.0), 2),
+            "aprendizaje_favorable": bool(ajustes_contexto.get("aprendizaje_favorable", False)),
+            "aprendizaje_desfavorable": bool(ajustes_contexto.get("aprendizaje_desfavorable", False)),
             "razones": ", ".join(razones)
         }
         contexto_comp = _contexto_competitivo({**row.to_dict(), **row_result})
         row_result["contexto_score"] = contexto_comp["score"]
         row_result["contexto_alertas"] = ", ".join(contexto_comp["alertas"]) if contexto_comp["alertas"] else ""
+        consenso_analitico = _consenso_analitico({**row.to_dict(), **row_result})
+        row_result["consenso_analitico"] = consenso_analitico["nivel"]
+        row_result["consenso_score"] = consenso_analitico["score"]
+        row_result["consenso_notas"] = ", ".join(consenso_analitico["notas"]) if consenso_analitico["notas"] else ""
         row_result["ai_score"] = calcular_ai_score(row_result)
         row_result["ai_decision"] = etiquetar_ai_decision(row_result["ai_score"])
         row_result["ai_resumen"] = resumir_ai_decision(row_result)

@@ -47,6 +47,10 @@ COLUMNAS_HISTORIAL = [
     "razon_simple",
 ]
 
+ESTADOS_EN_VIVO = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
+ESTADOS_NO_INICIADOS = {"NS", "TBD", "PST"}
+ESTADOS_CERRADOS = {"FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}
+
 
 def _prediccion_simple_desde_ganador(ganador):
     mapa = {
@@ -111,6 +115,17 @@ def _build_unique_key(row):
     fecha = str(row.get("fecha_partido") or "").strip()
     partido = str(row.get("partido") or "").strip()
     return f"match:{fecha}:{partido}"
+
+
+def _clasificar_contexto_partido(estado_partido):
+    estado = str(estado_partido or "").strip().upper()
+    if estado in ESTADOS_EN_VIVO:
+        return "En vivo"
+    if estado in ESTADOS_NO_INICIADOS:
+        return "Prepartido"
+    if estado in ESTADOS_CERRADOS:
+        return "Finalizado"
+    return "Sin dato"
 
 
 def init_storage():
@@ -374,11 +389,11 @@ def actualizar_resultados():
                 cambios_fila = True
         else:
             estado_norm = str(nuevo_estado or "").upper()
-            if estado_norm in {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}:
+            if estado_norm in ESTADOS_EN_VIVO:
                 nuevo_estado_consulta = "partido_en_juego"
-            elif estado_norm in {"NS", "TBD", "PST"}:
+            elif estado_norm in ESTADOS_NO_INICIADOS:
                 nuevo_estado_consulta = "pendiente"
-            elif estado_norm in {"FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}:
+            elif estado_norm in ESTADOS_CERRADOS:
                 nuevo_estado_consulta = "cerrado_sin_resultado"
             else:
                 nuevo_estado_consulta = "sin_resultado_final"
@@ -512,6 +527,11 @@ def cargar_historial():
             axis=1
         )
         df["profit"] = df.apply(calcular_profit_fila, axis=1)
+
+    if "estado_partido" in df.columns:
+        df["contexto_partido"] = df["estado_partido"].apply(_clasificar_contexto_partido)
+    else:
+        df["contexto_partido"] = "Sin dato"
 
     if "confianza" in df.columns:
         confianza_num = pd.to_numeric(df["confianza"], errors="coerce").fillna(0)
@@ -666,6 +686,7 @@ def construir_perfiles_segmento(min_muestra=3):
         "prediccion_simple": {},
         "decision_simple": {},
         "ai_decision": {},
+        "contexto_partido": {},
         "banda_confianza": {},
         "banda_edge": {},
         "banda_ai": {},
@@ -695,6 +716,7 @@ def construir_perfiles_segmento(min_muestra=3):
         ("prediccion_simple", "prediccion_simple"),
         ("decision_simple", "decision_simple"),
         ("ai_decision", "ai_decision"),
+        ("contexto_partido", "contexto_partido"),
         ("banda_confianza", "banda_confianza"),
         ("banda_edge", "banda_edge"),
         ("banda_ai", "banda_ai"),
@@ -803,6 +825,8 @@ def resumen_historial():
     perfiles_segmento, resumenes_segmento = construir_perfiles_segmento()
     segmentos_decision = _resumen_segmento(cerradas, "decision_simple", min_muestra=1)
     segmentos_prediccion = _resumen_segmento(cerradas, "prediccion_simple", min_muestra=1)
+    segmentos_contexto = _resumen_segmento(cerradas, "contexto_partido", min_muestra=1)
+    segmentos_estado_consulta = _resumen_segmento(df.copy(), "estado_final_consulta", min_muestra=1)
 
     picks_apostar = (
         cerradas[cerradas["decision_simple"] == "Apostar"].copy()
@@ -827,6 +851,24 @@ def resumen_historial():
             "profit": profit_sub,
         }
 
+    top_ligas = resumenes_segmento.get("liga", pd.DataFrame())
+    if not top_ligas.empty:
+        top_ligas = top_ligas.sort_values(by=["profit", "hit_rate"], ascending=[False, False]).reset_index(drop=True)
+    bottom_ligas = resumenes_segmento.get("liga", pd.DataFrame())
+    if not bottom_ligas.empty:
+        bottom_ligas = bottom_ligas.sort_values(by=["profit", "hit_rate"], ascending=[True, True]).reset_index(drop=True)
+
+    pred_simple_acierto = 0.0
+    if not cerradas.empty and "prediccion_simple" in cerradas.columns:
+        pred_map = {
+            "Gana el local": "Gana local",
+            "Gana el visitante": "Gana visitante",
+            "Empate": "Empate",
+            "Partido para mirar": "No bet",
+        }
+        pred_real = cerradas["prediccion_simple"].map(pred_map).fillna("No bet")
+        pred_simple_acierto = round(float((pred_real == cerradas["resultado_real"]).mean() * 100), 2)
+
     return {
         "historial": df,
         "cerradas": int(len(cerradas)),
@@ -835,6 +877,7 @@ def resumen_historial():
         "fallos": fallos,
         "hit_rate": hit_rate,
         "profit_neto": profit_neto,
+        "precision_prediccion_simple": pred_simple_acierto,
         "perfiles_segmento": perfiles_segmento,
         "segmentos_liga": resumenes_segmento.get("liga", pd.DataFrame()),
         "segmentos_mercado": resumenes_segmento.get("mercado", pd.DataFrame()),
@@ -847,6 +890,10 @@ def resumen_historial():
         "segmentos_ai": resumenes_segmento.get("banda_ai", pd.DataFrame()),
         "segmentos_decision": segmentos_decision,
         "segmentos_prediccion": segmentos_prediccion,
+        "segmentos_contexto": segmentos_contexto,
+        "segmentos_estado_consulta": segmentos_estado_consulta,
+        "top_ligas": top_ligas.head(5) if not top_ligas.empty else pd.DataFrame(),
+        "bottom_ligas": bottom_ligas.head(5) if not bottom_ligas.empty else pd.DataFrame(),
         "metricas_apostar": _metricas_subgrupo(picks_apostar),
         "metricas_mirar": _metricas_subgrupo(picks_mirar),
     }

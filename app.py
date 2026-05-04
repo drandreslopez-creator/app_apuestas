@@ -191,6 +191,7 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
     decision_top = row.get("decision_simple", "Mirar")
     pred_top = row.get("prediccion_simple", "Partido para mirar")
     disciplina_top = row.get("disciplina_simple", "Solo seguimiento")
+    consenso_top = row.get("consenso_analitico", "")
     logo_local = row.get("logo_local") or ""
     logo_visitante = row.get("logo_visitante") or ""
     marcador_local = row.get("marcador_local", 0)
@@ -244,6 +245,11 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
             f"{badge_decision(decision_top)}"
             f"<div style='font-size:11px;color:{COLOR_TEXT_MAIN};font-weight:700;text-align:center;margin-top:4px;'>{pred_top}</div>"
             + (
+                f"<div style='font-size:10px;color:{COLOR_TEXT_MUTED};font-weight:700;text-align:center;margin-top:3px;'>Consenso {consenso_top}</div>"
+                if consenso_top else
+                ""
+            )
+            + (
                 f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};font-weight:600;text-align:center;margin-top:3px;'>{disciplina_top}</div>"
                 if mostrar_disciplina else
                 ""
@@ -270,6 +276,9 @@ def render_partido(row):
     minuto_partido = row.get("minuto_partido", "")
     estado_actual = str(row.get("estado_partido", "NS") or "NS").upper()
     mostrar_marcador = estado_actual in {"LIVE", "HT", "1H", "2H"} or (int(marcador_local or 0) + int(marcador_visitante or 0) > 0)
+    consenso = str(row.get("consenso_analitico", "") or "").strip()
+    consenso_score = row.get("consenso_score", "")
+    consenso_notas = str(row.get("consenso_notas", "") or "").strip()
 
     st.markdown(f"<div style='padding:10px 0;border-bottom:1px solid {COLOR_BORDER};'>", unsafe_allow_html=True)
 
@@ -307,6 +316,14 @@ def render_partido(row):
             f"</div>",
             unsafe_allow_html=True,
         )
+        if consenso:
+            score_txt = f" ({consenso_score})" if consenso_score not in ("", None) else ""
+            st.markdown(
+                f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'><b>Consenso:</b> {consenso.capitalize()}{score_txt}"
+                + (f" · {consenso_notas}" if consenso_notas else "")
+                + "</div>",
+                unsafe_allow_html=True,
+            )
 
     with top2:
         st.markdown(badge_decision(row.get("decision_simple", "Mirar")), unsafe_allow_html=True)
@@ -476,6 +493,14 @@ def render_dashboard():
         with valid4:
             st.metric("Acierto en Mirar", f"{metricas_mirar.get('hit_rate', 0)}%")
 
+        learn1, learn2, learn3 = st.columns(3)
+        with learn1:
+            st.metric("Precisión predicción", f"{stats_historial.get('precision_prediccion_simple', 0)}%")
+        with learn2:
+            st.metric("Profit Apostar", f"{metricas_apostar.get('profit', 0)}u")
+        with learn3:
+            st.metric("Profit Mirar", f"{metricas_mirar.get('profit', 0)}u")
+
         st.markdown("### Validación rápida")
         segmentos_decision = stats_historial.get("segmentos_decision")
         if segmentos_decision is not None and not segmentos_decision.empty:
@@ -494,6 +519,28 @@ def render_dashboard():
             ]
             st.dataframe(
                 segmentos_decision[columnas_decision],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        segmentos_prediccion = stats_historial.get("segmentos_prediccion")
+        if segmentos_prediccion is not None and not segmentos_prediccion.empty:
+            st.markdown("### Rendimiento por predicción")
+            columnas_pred = [
+                col for col in [
+                    "prediccion_simple",
+                    "picks",
+                    "aciertos",
+                    "fallos",
+                    "hit_rate",
+                    "roi",
+                    "profit",
+                    "nivel_riesgo",
+                ]
+                if col in segmentos_prediccion.columns
+            ]
+            st.dataframe(
+                segmentos_prediccion[columnas_pred],
                 use_container_width=True,
                 hide_index=True,
             )
@@ -520,6 +567,67 @@ def render_dashboard():
                 hide_index=True,
             )
 
+        contexto_col1, contexto_col2 = st.columns(2)
+        segmentos_contexto = stats_historial.get("segmentos_contexto")
+        if segmentos_contexto is not None and not segmentos_contexto.empty:
+            with contexto_col1:
+                st.markdown("### Rendimiento por contexto")
+                columnas_contexto = [
+                    col for col in [
+                        "contexto_partido",
+                        "picks",
+                        "aciertos",
+                        "fallos",
+                        "hit_rate",
+                        "roi",
+                        "profit",
+                    ]
+                    if col in segmentos_contexto.columns
+                ]
+                st.dataframe(
+                    segmentos_contexto[columnas_contexto],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        segmentos_estado_consulta = stats_historial.get("segmentos_estado_consulta")
+        if segmentos_estado_consulta is not None and not segmentos_estado_consulta.empty:
+            with contexto_col2:
+                st.markdown("### Estado de cierres")
+                columnas_cierre = [
+                    col for col in [
+                        "estado_final_consulta",
+                        "picks",
+                    ]
+                    if col in segmentos_estado_consulta.columns
+                ]
+                st.dataframe(
+                    segmentos_estado_consulta[columnas_cierre],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        top_col, bottom_col = st.columns(2)
+        top_ligas = stats_historial.get("top_ligas")
+        if top_ligas is not None and not top_ligas.empty:
+            with top_col:
+                st.markdown("### Ligas más fuertes")
+                st.dataframe(
+                    top_ligas[[col for col in ["liga", "picks", "hit_rate", "roi", "profit"] if col in top_ligas.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        bottom_ligas = stats_historial.get("bottom_ligas")
+        if bottom_ligas is not None and not bottom_ligas.empty:
+            with bottom_col:
+                st.markdown("### Ligas más flojas")
+                st.dataframe(
+                    bottom_ligas[[col for col in ["liga", "picks", "hit_rate", "roi", "profit"] if col in bottom_ligas.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
         historial_df = stats_historial["historial"]
         if historial_df.empty:
             st.info("Aún no hay historial guardado.")
@@ -532,6 +640,7 @@ def render_dashboard():
                     "prediccion_simple",
                     "decision_simple",
                     "resultado_real",
+                    "estado_final_consulta",
                     "profit",
                 ]
                 if col in historial_df.columns
