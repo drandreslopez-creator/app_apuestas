@@ -62,6 +62,10 @@ LIGAS_SECUNDARIAS = [
     "afc champions league", "caf champions league", "premier soccer league", "a-league"
 ]
 ESPN_LEAGUES = [
+    {"code": "fifa.world", "label": "FIFA World Cup", "country": "World", "group": "FIFA World Cup", "priority": 101},
+    {"code": "fifa.cwc", "label": "FIFA Club World Cup", "country": "World", "group": "FIFA Club World Cup", "priority": 99},
+    {"code": "fifa.worldq.conmebol", "label": "FIFA World Cup Qualifying - CONMEBOL", "country": "South America", "group": "Eliminatorias Mundial", "priority": 92},
+    {"code": "fifa.worldq.uefa", "label": "FIFA World Cup Qualifying - UEFA", "country": "Europe", "group": "Eliminatorias Mundial", "priority": 90},
     {"code": "uefa.champions", "label": "Champions League", "country": "World", "group": "Champions League", "priority": 100},
     {"code": "uefa.europa", "label": "Europa League", "country": "World", "group": "Europa League", "priority": 98},
     {"code": "uefa.europa.conf", "label": "Conference League", "country": "World", "group": "Conference League", "priority": 97},
@@ -155,7 +159,28 @@ def _cache_partidos_reciente(max_age_seconds=CACHE_FAST_AGE_SECONDS):
             return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
-    return _cargar_cache_partidos()
+    df_cache = _cargar_cache_partidos()
+    if df_cache.empty:
+        return df_cache
+    return _filtrar_cache_vigente(df_cache)
+
+
+def _filtrar_cache_vigente(df_cache):
+    if df_cache is None or df_cache.empty or "fecha_partido" not in df_cache.columns:
+        return pd.DataFrame()
+    now_local = datetime.now(TIMEZONE)
+    df = df_cache.copy()
+    df["fecha_partido_dt"] = pd.to_datetime(df["fecha_partido"], errors="coerce")
+    df["estado_partido"] = df["estado_partido"].apply(_texto_seguro) if "estado_partido" in df.columns else "NS"
+    df = df[
+        df.apply(
+            lambda row: _debe_incluir_rango_48h(row.get("fecha_partido_dt"), str(row.get("estado_partido") or "").upper(), now_local),
+            axis=1,
+        )
+    ].copy()
+    if "fecha_partido_dt" in df.columns:
+        df = df.drop(columns=["fecha_partido_dt"])
+    return df.reset_index(drop=True)
 
 
 def _enriquecer_odds_desde_cache(df_partidos):
@@ -890,6 +915,10 @@ def buscar_resultado_partido(fecha=None, fixture_id=None, partido=None):
 
     df_cache = _cargar_cache_partidos()
     if df_cache.empty or not partido:
+        return None
+
+    df_cache = _filtrar_cache_vigente(df_cache)
+    if df_cache.empty:
         return None
 
     cache_match = df_cache[(df_cache["local"] + " vs " + df_cache["visitante"]) == str(partido)]
