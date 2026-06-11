@@ -15,6 +15,7 @@ from odds import get_odds
 API_KEY = os.getenv("API_SPORTS_KEY", "0dddf668bc3e722a3afda4592a179671")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(BASE_DIR, "matches_cache.csv")
+CACHE_FAST_AGE_SECONDS = 300
 
 headers = {
     "x-apisports-key": API_KEY
@@ -142,6 +143,19 @@ def _cargar_cache_partidos():
         return df
     except Exception:
         return pd.DataFrame()
+
+
+def _cache_partidos_reciente(max_age_seconds=CACHE_FAST_AGE_SECONDS):
+    if not os.path.exists(CACHE_PATH):
+        return pd.DataFrame()
+    try:
+        modified_at = os.path.getmtime(CACHE_PATH)
+        age_seconds = max(0, datetime.now().timestamp() - modified_at)
+        if age_seconds > max_age_seconds:
+            return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+    return _cargar_cache_partidos()
 
 
 def _enriquecer_odds_desde_cache(df_partidos):
@@ -1200,6 +1214,19 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
     )
     _set_last_api_status(True, "")
 
+    if not consulta_por_fecha:
+        df_cache_rapido = _cache_partidos_reciente()
+        if not df_cache_rapido.empty:
+            df_cache_rapido = df_cache_rapido.head(limit).copy()
+            _set_last_api_status(
+                True,
+                "Datos cargados desde caché reciente.",
+                "",
+                used_cache=True,
+                source="cache_local",
+            )
+            return df_cache_rapido
+
     if consulta_por_fecha:
         fechas_consulta = [fecha]
     else:
@@ -1213,6 +1240,7 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
     partidos_filtrados = []
     now_local = datetime.now(TIMEZONE)
     api_errors = []
+    api_suspendida = False
 
     try:
         for fecha_consulta in fechas_consulta:
@@ -1223,6 +1251,9 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
             if data.get("errors"):
                 error_text = json.dumps(data.get("errors"), ensure_ascii=False)
                 api_errors.append(f"{fecha_consulta}: {error_text}")
+                if any(flag in error_text.lower() for flag in ["suspended", "account is suspended", "access"]):
+                    api_suspendida = True
+                    break
 
             if "response" not in data or len(data["response"]) == 0:
                 continue
@@ -1431,8 +1462,23 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
                 _set_last_api_status(True, "Datos cargados desde API-Football.", "", used_cache=False)
             return df_partidos
 
+        if api_suspendida:
+            df_espn, espn_errors = _fetch_matches_espn(fecha=fecha, limit=limit)
+            if not df_espn.empty:
+                df_espn = _enriquecer_odds_desde_cache(df_espn)
+                _guardar_cache_partidos(df_espn)
+                _set_last_api_status(
+                    True,
+                    "La API principal está suspendida. Se usó respaldo disponible.",
+                    " | ".join(api_errors + espn_errors),
+                    used_cache=False,
+                    source="espn_scoreboard",
+                )
+                return df_espn
+
         df_espn, espn_errors = _fetch_matches_espn(fecha=fecha, limit=limit)
         if not df_espn.empty:
+            df_espn = _enriquecer_odds_desde_cache(df_espn)
             _guardar_cache_partidos(df_espn)
             _set_last_api_status(
                 True,
