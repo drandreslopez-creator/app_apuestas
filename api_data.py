@@ -526,6 +526,22 @@ def _estimar_metricas_espn(home_comp, away_comp):
 def _debe_incluir_rango_48h(match_dt, estado, now_local):
     if match_dt is None:
         return False
+    try:
+        match_dt = pd.to_datetime(match_dt, errors="coerce")
+    except Exception:
+        return False
+    if pd.isna(match_dt):
+        return False
+    if getattr(match_dt, "tzinfo", None) is not None:
+        try:
+            match_dt = match_dt.tz_convert(TIMEZONE).tz_localize(None)
+        except Exception:
+            try:
+                match_dt = match_dt.tz_localize(None)
+            except Exception:
+                pass
+    if getattr(now_local, "tzinfo", None) is not None:
+        now_local = now_local.replace(tzinfo=None)
     if estado in ESTADOS_FINALIZADOS:
         return False
     if estado in ESTADOS_EN_CURSO or estado == "LIVE":
@@ -1242,19 +1258,7 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
         consulta_por_fecha if incluir_finalizados is None else incluir_finalizados
     )
     _set_last_api_status(True, "")
-
-    if not consulta_por_fecha:
-        df_cache_rapido = _cache_partidos_reciente()
-        if not df_cache_rapido.empty:
-            df_cache_rapido = df_cache_rapido.head(limit).copy()
-            _set_last_api_status(
-                True,
-                "Datos cargados desde caché reciente.",
-                "",
-                used_cache=True,
-                source="cache_local",
-            )
-            return df_cache_rapido
+    df_cache_rapido = _cache_partidos_reciente().head(limit).copy() if not consulta_por_fecha else pd.DataFrame()
 
     if consulta_por_fecha:
         fechas_consulta = [fecha]
@@ -1504,6 +1508,15 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
                     source="espn_scoreboard",
                 )
                 return df_espn
+            if not df_cache_rapido.empty:
+                _set_last_api_status(
+                    True,
+                    "La API principal está suspendida. Se usó caché reciente.",
+                    " | ".join(api_errors + espn_errors),
+                    used_cache=True,
+                    source="cache_local",
+                )
+                return df_cache_rapido
 
         df_espn, espn_errors = _fetch_matches_espn(fecha=fecha, limit=limit)
         if not df_espn.empty:
@@ -1517,6 +1530,16 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
                 source="espn_scoreboard",
             )
             return df_espn
+
+        if not df_cache_rapido.empty:
+            _set_last_api_status(
+                True,
+                "La API principal no devolvió partidos. Se usó caché reciente.",
+                " | ".join(api_errors + espn_errors),
+                used_cache=True,
+                source="cache_local",
+            )
+            return df_cache_rapido
 
         df_cache = _cargar_cache_partidos()
         if not df_cache.empty:

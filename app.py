@@ -22,12 +22,12 @@ COLOR_BORDER = "color-mix(in srgb, var(--text-color) 12%, transparent)"
 COLOR_CARD_BG = "color-mix(in srgb, var(--secondary-background-color) 94%, var(--background-color) 6%)"
 
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def cargar_partidos():
     return get_matches_api(limit=80)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def cargar_resultados(df, calibracion):
     return analizar_partidos(df.copy(), calibracion=calibracion)
 

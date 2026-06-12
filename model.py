@@ -774,6 +774,7 @@ def decision_simple(row_dict):
     calidad_mercado, mercado_bonus = _calidad_mercado(row_dict)
     consenso = _consenso_analitico(row_dict)
     prioridad_liga = float(row_dict.get("prioridad_liga", 0) or 0)
+    ventaja_prob_pct = float(row_dict.get("ventaja_prob_pct", 0) or 0)
     aprendizaje_score = float(row_dict.get("aprendizaje_score", 0) or 0)
     aprendizaje_favorable = bool(row_dict.get("aprendizaje_favorable", False))
     aprendizaje_desfavorable = bool(row_dict.get("aprendizaje_desfavorable", False))
@@ -788,6 +789,7 @@ def decision_simple(row_dict):
     contexto_fuerte = contexto["score"] >= 2
     ventaja_fuerte = ventaja >= 5
     premium_contexto = prioridad_liga >= 85 and diff_ppm >= 0.24
+    premium_torneo = prioridad_liga >= 95
     puede_apostar = ganador_modelo != "No bet" and estado_modelo != "NO APOSTAR"
     mercado_aceptable = calidad_mercado in {"fuerte", "aceptable"}
     oportunidad_razonable = (
@@ -811,11 +813,27 @@ def decision_simple(row_dict):
         mercado_no_contradice
     )
 
-    if (aprendizaje_desfavorable or consenso["nivel"] == "bajo") and calidad_mercado == "debil" and not live:
+    if (
+        (aprendizaje_desfavorable or consenso["nivel"] == "bajo") and
+        calidad_mercado == "debil" and
+        not live and
+        not (
+            premium_torneo and
+            prediccion != "Empate" and
+            prob_top >= 44 and
+            ventaja_prob_pct >= 12
+        )
+    ):
         return "Evitar"
 
     if prediccion == "Empate" and prob_top < 36:
         return "Evitar"
+
+    if premium_torneo and prediccion != "Empate" and ventaja_prob_pct >= 12 and consenso["nivel"] != "bajo":
+        if puede_apostar and prob_top >= 45 and mejor_edge_pct >= 1.5 and consenso["score"] >= -0.75:
+            return "Apostar"
+        if prob_top >= 44:
+            return "Mirar"
 
     if live:
         if lado_predicho == "empate":
@@ -1101,10 +1119,12 @@ def disciplina_simple(row_dict):
     calidad_mercado, _ = _calidad_mercado(row_dict)
     consenso = _consenso_analitico(row_dict)
     prioridad_liga = float(row_dict.get("prioridad_liga", 0) or 0)
+    ventaja_prob_pct = float(row_dict.get("ventaja_prob_pct", 0) or 0)
     aprendizaje_score = float(row_dict.get("aprendizaje_score", 0) or 0)
     aprendizaje_favorable = bool(row_dict.get("aprendizaje_favorable", False))
     aprendizaje_desfavorable = bool(row_dict.get("aprendizaje_desfavorable", False))
     premium_contexto = prioridad_liga >= 85 and contexto["diff_ppm"] >= 0.24
+    premium_torneo = prioridad_liga >= 95
 
     lectura_fuerte = (
         prediccion != "Empate" and
@@ -1143,11 +1163,29 @@ def disciplina_simple(row_dict):
     mercado_verificado = apoyo_mercado == "a_favor"
     mercado_neutro = apoyo_mercado in {"a_favor", "dudoso"}
 
-    if (aprendizaje_desfavorable or consenso["nivel"] == "bajo") and calidad_mercado == "debil":
+    if (
+        (aprendizaje_desfavorable or consenso["nivel"] == "bajo") and
+        calidad_mercado == "debil" and
+        not (
+            premium_torneo and
+            prediccion != "Empate" and
+            prob_top >= 44 and
+            ventaja_prob_pct >= 12 and
+            consenso["nivel"] != "bajo"
+        )
+    ):
         return "No tocar"
 
     if row_dict.get("ganador") == "No bet":
         if decision == "Mirar":
+            if (
+                premium_torneo and
+                prediccion != "Empate" and
+                prob_top >= 44 and
+                ventaja_prob_pct >= 12 and
+                consenso["nivel"] != "bajo"
+            ):
+                return "Entrada pequeña"
             if (
                 prediccion != "Empate" and
                 mercado_verificado and
@@ -1163,6 +1201,8 @@ def disciplina_simple(row_dict):
     if decision == "Apostar":
         if lectura_fuerte and not live:
             return "Apuesta fuerte"
+        if premium_torneo and prediccion != "Empate" and ventaja_prob_pct >= 12 and consenso["score"] >= -0.75:
+            return "Apuesta pequeña"
         if lectura_apostable and (mercado_verificado or premium_contexto or aprendizaje_favorable) and consenso["score"] >= 0.75:
             return "Apuesta pequeña"
         if calidad_mercado in {"fuerte", "aceptable"} and contexto["score"] >= 2 and confianza >= 56:
@@ -1246,12 +1286,23 @@ def _promover_mejores_oportunidades(df):
     if (df["decision_simple"] == "Apostar").any():
         return df
 
+    premium_cond = (
+        (df["prioridad_liga"].fillna(0) >= 95) &
+        (df["prediccion_simple"].isin(["Gana el local", "Gana el visitante"])) &
+        (df["ventaja_prob_pct"].fillna(0) >= 12) &
+        (df["confianza"].fillna(0) >= 44)
+    )
     elegibles = df[
         (df["decision_simple"] == "Mirar") &
         (df["prediccion_simple"].isin(["Gana el local", "Gana el visitante"])) &
         (~df["trampa"].fillna(False)) &
-        (df["mejor_edge_pct"].fillna(0) >= 5.0) &
-        (df["prioridad_liga"].fillna(0) >= 70)
+        (
+            (
+                (df["mejor_edge_pct"].fillna(0) >= 2.0) &
+                (df["prioridad_liga"].fillna(0) >= 70)
+            ) |
+            premium_cond
+        )
     ].copy()
 
     if elegibles.empty:
@@ -1276,7 +1327,7 @@ def _promover_mejores_oportunidades(df):
         ascending=[False, False, False],
     )
 
-    max_promociones = 2 if len(elegibles) >= 3 else 1
+    max_promociones = 3 if len(elegibles) >= 4 else 2 if len(elegibles) >= 2 else 1
     promos = elegibles.head(max_promociones)
     df_result = df.copy()
 
@@ -1466,6 +1517,9 @@ def analizar_partidos(df, calibracion=None):
         else:
             prob = prob_empate
 
+        probs_ordenadas = sorted([prob_local, prob_empate, prob_visitante], reverse=True)
+        ventaja_prob = round((probs_ordenadas[0] - probs_ordenadas[1]) * 100, 2) if len(probs_ordenadas) >= 2 else 0.0
+
         mejor_edge_pct = round(mejor_edge * 100, 2)
         row["mercado_historial"] = generar_mercado(
             "Gana local" if mejor == "Local" else "Gana visitante" if mejor == "Visitante" else "Empate",
@@ -1491,6 +1545,7 @@ def analizar_partidos(df, calibracion=None):
         min_edge_ajustado = max(min_edge + ajustes_contexto["edge_delta"], 0.02)
         confianza_bonus_total = confianza_bonus + ajustes_contexto["confianza_delta"]
         stake_factor_total = stake_factor * ajustes_contexto["stake_factor"]
+        premium_torneo = float(row.get("prioridad_liga", 0) or 0) >= 95
 
         if mejor == "Empate":
             min_edge_ajustado += 0.015
@@ -1506,6 +1561,18 @@ def analizar_partidos(df, calibracion=None):
 
         else:
             ganador = "No bet"
+
+        premium_rescatable = (
+            ganador == "No bet" and
+            premium_torneo and
+            mejor != "Empate" and
+            prob >= 0.45 and
+            ventaja_prob >= 12 and
+            mejor_edge_pct >= 1.5
+        )
+
+        if premium_rescatable:
+            ganador = "Gana local" if mejor == "Local" else "Gana visitante"
 
         trampa = False
         razon_trampa = ""
@@ -1531,6 +1598,8 @@ def analizar_partidos(df, calibracion=None):
         value_empate = calcular_value(prob_empate, row["cuota_empate"])
 
         confianza = calcular_confianza_ajustada(prob, mejor_edge, bonus=confianza_bonus_total)
+        if premium_rescatable:
+            confianza = max(confianza, 54)
 
         if ganador == "Gana local":
             stake_label, stake_num = calcular_stake_kelly(prob_local, row["cuota_local"], factor=stake_factor_total)
@@ -1542,6 +1611,8 @@ def analizar_partidos(df, calibracion=None):
             stake_label, stake_num = "❌ NO APOSTAR", 0
 
         stake_label, stake_num = ajustar_stake_con_cap(stake_num, stake_label, max_stake_cap)
+        if premium_rescatable and stake_num <= 0:
+            stake_label, stake_num = "🟢 BAJO (1-2%)", 1
 
         mercado = generar_mercado(ganador, goles)
         ev_por_unidad = round((prob * row["cuota_local"] - 1), 3) if ganador == "Gana local" else (
@@ -1565,6 +1636,10 @@ def analizar_partidos(df, calibracion=None):
             "value_visitante": value_visitante
         })
 
+        if premium_rescatable and estado == "NO APOSTAR":
+            estado = "APOSTABLE"
+            razones = [r for r in razones if r != "Baja confianza"]
+
         if trampa and ganador != "No bet":
             ganador = "No bet"
             stake_label, stake_num = "❌ NO APOSTAR", 0
@@ -1576,9 +1651,16 @@ def analizar_partidos(df, calibracion=None):
             ganador != "No bet" and
             (
                 (
+                    premium_torneo and
+                    mejor != "Empate" and
+                    confianza >= 52 and
+                    mejor_edge_pct >= 1.5 and
+                    ventaja_prob >= 12
+                ) or
+                (
                     float(row.get("prioridad_liga", 0) or 0) >= 85 and
                     confianza >= 54 and
-                    mejor_edge_pct >= 7
+                    mejor_edge_pct >= 5
                 ) or
                 (
                     confianza >= 58 and
@@ -1667,6 +1749,7 @@ def analizar_partidos(df, calibracion=None):
             "min_edge_modelo": round(min_edge_ajustado * 100, 2),
             "mejor_edge": mejor_edge,
             "mejor_edge_pct": mejor_edge_pct,
+            "ventaja_prob_pct": ventaja_prob,
             "ev_por_unidad": ev_por_unidad,
             "banda_confianza": row.get("banda_confianza"),
             "banda_edge": row.get("banda_edge"),
