@@ -3,6 +3,40 @@ import pandas as pd
 from math import exp, factorial
 
 
+def ajustes_perfil_riesgo(perfil):
+    perfil = str(perfil or "equilibrado").strip().lower()
+    ajustes = {
+        "conservador": {
+            "prob_delta": 2.0,
+            "conf_delta": 4.0,
+            "edge_pct_delta": 1.0,
+            "ventaja_delta": 1.0,
+            "consenso_delta": 0.35,
+            "promociones_max": 1,
+            "promo_edge_min": 3.5,
+        },
+        "equilibrado": {
+            "prob_delta": 0.0,
+            "conf_delta": 0.0,
+            "edge_pct_delta": 0.0,
+            "ventaja_delta": 0.0,
+            "consenso_delta": 0.0,
+            "promociones_max": 2,
+            "promo_edge_min": 2.0,
+        },
+        "agresivo": {
+            "prob_delta": -3.0,
+            "conf_delta": -6.0,
+            "edge_pct_delta": -1.25,
+            "ventaja_delta": -1.0,
+            "consenso_delta": -0.55,
+            "promociones_max": 4,
+            "promo_edge_min": 0.75,
+        },
+    }
+    return ajustes.get(perfil, ajustes["equilibrado"])
+
+
 def detectar_trampa(prob, cuota):
 
     prob_casa = 1 / cuota
@@ -106,6 +140,159 @@ def calcular_over_under(matriz, linea=2.5):
                 under += matriz[i, j]
 
     return over, under
+
+
+def calcular_mercados_adicionales(matriz):
+    over_15 = 0.0
+    over_25 = 0.0
+    under_35 = 0.0
+    under_45 = 0.0
+    btts = 0.0
+    local_anota = 0.0
+    visitante_anota = 0.0
+
+    for i in range(matriz.shape[0]):
+        for j in range(matriz.shape[1]):
+            p = matriz[i, j]
+            if i + j > 1.5:
+                over_15 += p
+            if i + j > 2.5:
+                over_25 += p
+            if i + j <= 3.5:
+                under_35 += p
+            if i + j <= 4.5:
+                under_45 += p
+            if i > 0 and j > 0:
+                btts += p
+            if i > 0:
+                local_anota += p
+            if j > 0:
+                visitante_anota += p
+
+    prob_local, prob_empate, prob_visitante = calcular_1x2(matriz)
+    return {
+        "local_empate": prob_local + prob_empate,
+        "visitante_empate": prob_visitante + prob_empate,
+        "gana_cualquiera": prob_local + prob_visitante,
+        "over_15": over_15,
+        "over_25": over_25,
+        "under_35": under_35,
+        "under_45": under_45,
+        "btts": btts,
+        "local_anota": local_anota,
+        "visitante_anota": visitante_anota,
+    }
+
+
+def validar_coherencia_mercados(prob_local, prob_empate, prob_visitante, mercados):
+    corregidos = dict(mercados)
+    inconsistencias = []
+
+    def val(key):
+        return float(corregidos.get(key, 0.0) or 0.0)
+
+    def registrar(key, antes, despues, motivo):
+        inconsistencias.append(
+            {
+                "mercado": key,
+                "antes": round(antes * 100, 2),
+                "despues": round(despues * 100, 2),
+                "motivo": motivo,
+            }
+        )
+
+    def ensure_min(key, minimo, motivo):
+        actual = val(key)
+        if actual + 1e-9 < minimo:
+            corregidos[key] = minimo
+            registrar(key, actual, minimo, motivo)
+
+    def ensure_max(key, maximo, motivo):
+        actual = val(key)
+        if actual - 1e-9 > maximo:
+            corregidos[key] = maximo
+            registrar(key, actual, maximo, motivo)
+
+    ensure_min("local_empate", prob_local, "Local o empate no puede ser menor que gana local")
+    ensure_min("local_empate", prob_empate, "Local o empate no puede ser menor que empate")
+    ensure_min("visitante_empate", prob_visitante, "Visitante o empate no puede ser menor que gana visitante")
+    ensure_min("visitante_empate", prob_empate, "Visitante o empate no puede ser menor que empate")
+    ensure_min("local_anota", prob_local, "Local anota 1+ no puede ser menor que gana local")
+    ensure_min("visitante_anota", prob_visitante, "Visitante anota 1+ no puede ser menor que gana visitante")
+    ensure_min("gana_cualquiera", prob_local, "Gana cualquiera no puede ser menor que gana local")
+    ensure_min("gana_cualquiera", prob_visitante, "Gana cualquiera no puede ser menor que gana visitante")
+    ensure_min("over_15", val("over_25"), "Over 1.5 no puede ser menor que Over 2.5")
+    ensure_min("under_45", val("under_35"), "Under 4.5 no puede ser menor que Under 3.5")
+
+    for key in [
+        "local_empate",
+        "visitante_empate",
+        "gana_cualquiera",
+        "over_15",
+        "over_25",
+        "under_35",
+        "under_45",
+        "btts",
+        "local_anota",
+        "visitante_anota",
+    ]:
+        ensure_min(key, 0.0, "Probabilidad negativa")
+        ensure_max(key, 1.0, "Probabilidad mayor a 100%")
+
+    return corregidos, inconsistencias
+
+
+TEAM_STRENGTH_HINTS = {
+    "argentina": 91,
+    "brazil": 92,
+    "brasil": 92,
+    "france": 90,
+    "england": 88,
+    "spain": 87,
+    "germany": 86,
+    "portugal": 86,
+    "netherlands": 85,
+    "belgium": 84,
+    "croatia": 82,
+    "uruguay": 81,
+    "morocco": 80,
+    "switzerland": 79,
+    "swiss": 79,
+    "scotland": 77,
+    "united states": 76,
+    "usa": 76,
+    "usmnt": 76,
+    "paraguay": 74,
+    "canada": 73,
+    "bosnia": 71,
+    "bosnia-herzegovina": 71,
+    "qatar": 68,
+    "haiti": 58,
+}
+
+
+def _team_strength_hint(name):
+    texto = str(name or "").strip().lower()
+    if not texto:
+        return None
+    for clave, valor in TEAM_STRENGTH_HINTS.items():
+        if clave in texto:
+            return valor
+    return None
+
+
+def _jerarquia_futbolistica(local, visitante):
+    fuerza_local = _team_strength_hint(local)
+    fuerza_visitante = _team_strength_hint(visitante)
+    if fuerza_local is None or fuerza_visitante is None:
+        return {"diff": 0, "lado": None}
+
+    diff = fuerza_local - fuerza_visitante
+    if diff >= 5:
+        return {"diff": diff, "lado": "local"}
+    if diff <= -5:
+        return {"diff": diff, "lado": "visitante"}
+    return {"diff": diff, "lado": None}
 
 
 def calcular_value(prob, cuota):
@@ -442,6 +629,16 @@ def _resumir_racha(valor):
     return f"{wins}G-{draws}E-{losses}P"
 
 
+def _frase_inclinacion(prob_top, ventaja):
+    if prob_top >= 52 and ventaja >= 14:
+        return "ventaja marcada"
+    if prob_top >= 48 and ventaja >= 10:
+        return "ventaja clara"
+    if prob_top >= 44 and ventaja >= 7:
+        return "ligera ventaja"
+    return "partido muy fino"
+
+
 def _equipo_en_mejor_momento(row_dict):
     try:
         ppm_local = float(row_dict.get("ppm_local_casa", row_dict.get("ppm_local", 0)) or 0)
@@ -601,6 +798,7 @@ def _contexto_competitivo(row_dict):
     alerta_rotacion_visitante = bool(row_dict.get("alerta_rotacion_visitante"))
     banco_corto_local = bool(row_dict.get("banco_corto_local"))
     banco_corto_visitante = bool(row_dict.get("banco_corto_visitante"))
+    jerarquia = _jerarquia_futbolistica(row_dict.get("local"), row_dict.get("visitante"))
 
     score = 0
     alertas = []
@@ -658,6 +856,12 @@ def _contexto_competitivo(row_dict):
     if prob_top < 52 and ventaja < 4:
         alertas.append("lectura_fragil")
 
+    if lado_predicho != "empate" and jerarquia["lado"] and jerarquia["lado"] != lado_predicho and abs(jerarquia["diff"]) >= 8:
+        score -= 1.5
+        alertas.append("jerarquia_en_contra")
+    elif lado_predicho != "empate" and jerarquia["lado"] == lado_predicho and abs(jerarquia["diff"]) >= 8:
+        score += 1.0
+
     return {
         "lado_predicho": lado_predicho,
         "lado_momento": lado_momento,
@@ -676,6 +880,8 @@ def _contexto_competitivo(row_dict):
         "alerta_rotacion_visitante": alerta_rotacion_visitante,
         "banco_corto_local": banco_corto_local,
         "banco_corto_visitante": banco_corto_visitante,
+        "jerarquia_lado": jerarquia["lado"],
+        "jerarquia_diff": jerarquia["diff"],
         "score": score,
         "alertas": alertas,
     }
@@ -778,6 +984,13 @@ def decision_simple(row_dict):
     aprendizaje_score = float(row_dict.get("aprendizaje_score", 0) or 0)
     aprendizaje_favorable = bool(row_dict.get("aprendizaje_favorable", False))
     aprendizaje_desfavorable = bool(row_dict.get("aprendizaje_desfavorable", False))
+    perfil_riesgo = row_dict.get("perfil_riesgo", "equilibrado")
+    ajustes_perfil = ajustes_perfil_riesgo(perfil_riesgo)
+    prob_delta = float(ajustes_perfil.get("prob_delta", 0) or 0)
+    conf_delta = float(ajustes_perfil.get("conf_delta", 0) or 0)
+    edge_pct_delta = float(ajustes_perfil.get("edge_pct_delta", 0) or 0)
+    ventaja_delta = float(ajustes_perfil.get("ventaja_delta", 0) or 0)
+    consenso_delta = float(ajustes_perfil.get("consenso_delta", 0) or 0)
     lectura_limpia = (
         lado_predicho != "empate" and
         "momento_en_contra" not in alertas and
@@ -794,9 +1007,9 @@ def decision_simple(row_dict):
     mercado_aceptable = calidad_mercado in {"fuerte", "aceptable"}
     oportunidad_razonable = (
         prediccion != "Empate" and
-        prob_top >= 53 and
-        ventaja >= 4 and
-        confianza >= 58 and
+        prob_top >= (53 + prob_delta) and
+        ventaja >= (4 + ventaja_delta) and
+        confianza >= (58 + conf_delta) and
         ai_score >= 56 and
         contexto["score"] >= 2 and
         lectura_limpia and
@@ -804,9 +1017,9 @@ def decision_simple(row_dict):
     )
     oportunidad_premium = (
         prediccion != "Empate" and
-        prob_top >= 54 and
-        ventaja >= 4.5 and
-        confianza >= 56 and
+        prob_top >= (54 + prob_delta) and
+        ventaja >= (4.5 + ventaja_delta) and
+        confianza >= (56 + conf_delta) and
         contexto["score"] >= 2 and
         lectura_limpia and
         premium_contexto and
@@ -820,8 +1033,8 @@ def decision_simple(row_dict):
         not (
             premium_torneo and
             prediccion != "Empate" and
-            prob_top >= 44 and
-            ventaja_prob_pct >= 12
+            prob_top >= max(40, 44 + prob_delta) and
+            ventaja_prob_pct >= max(10, 12 + ventaja_delta)
         )
     ):
         return "Evitar"
@@ -829,10 +1042,10 @@ def decision_simple(row_dict):
     if prediccion == "Empate" and prob_top < 36:
         return "Evitar"
 
-    if premium_torneo and prediccion != "Empate" and ventaja_prob_pct >= 12 and consenso["nivel"] != "bajo":
-        if puede_apostar and prob_top >= 45 and mejor_edge_pct >= 1.5 and consenso["score"] >= -0.75:
+    if premium_torneo and prediccion != "Empate" and ventaja_prob_pct >= max(10, 12 + ventaja_delta) and consenso["nivel"] != "bajo":
+        if puede_apostar and prob_top >= max(42, 45 + prob_delta) and mejor_edge_pct >= max(0.5, 1.5 + edge_pct_delta) and consenso["score"] >= (-0.75 + consenso_delta):
             return "Apostar"
-        if prob_top >= 44:
+        if prob_top >= max(41, 44 + prob_delta):
             return "Mirar"
 
     if live:
@@ -872,13 +1085,13 @@ def decision_simple(row_dict):
     if puede_apostar and (
         estado_modelo == "APOSTABLE" and
         prediccion != "Empate" and
-        prob_top >= 53 and
-        mejor_edge_pct >= 6 and
+        prob_top >= (53 + prob_delta) and
+        mejor_edge_pct >= max(2.0, 6 + edge_pct_delta) and
         mercado_aceptable and
         lectura_limpia and
         mercado_no_contradice and
         contexto["score"] >= 1 and
-        consenso["score"] >= 0.75
+        consenso["score"] >= (0.75 + consenso_delta)
     ):
         return "Apostar"
 
@@ -957,13 +1170,13 @@ def decision_simple(row_dict):
     ):
         return "Apostar"
 
-    if prediccion != "Empate" and prob_top >= 52 and ventaja >= 4 and contexto["score"] + mercado_bonus >= 0 and consenso["score"] >= 0:
+    if prediccion != "Empate" and prob_top >= (50 + prob_delta) and ventaja >= (3.5 + ventaja_delta) and contexto["score"] + mercado_bonus >= 0 and consenso["score"] >= (-0.2 + consenso_delta):
         return "Mirar"
 
-    if prob_top >= 50 and ai_score >= 48 and (mercado_aceptable or aprendizaje_score >= 0.8):
+    if prob_top >= (48 + prob_delta) and ai_score >= 48 and (mercado_aceptable or aprendizaje_score >= 0.8):
         return "Mirar"
 
-    if prediccion != "Empate" and prob_top >= 49 and (ventaja >= 5 or diff_ppm >= 0.3 or contexto["score"] >= 1):
+    if prediccion != "Empate" and prob_top >= (46 + prob_delta) and (ventaja >= (4 + ventaja_delta) or diff_ppm >= 0.26 or contexto["score"] >= 1):
         return "Mirar"
 
     if estado_modelo == "APOSTABLE" and prediccion != "Empate":
@@ -986,16 +1199,20 @@ def contexto_simple(row_dict):
     contexto = _contexto_competitivo(row_dict)
     live = _es_partido_en_vivo(row_dict)
     gl, gv = _marcador_actual(row_dict)
+    prediccion, prob_top = _prediccion_base(row_dict)
+    ventaja = _ventaja_prediccion(row_dict)
+    inclinacion = _frase_inclinacion(prob_top, ventaja)
+    prioridad = float(row_dict.get("prioridad_liga", 0) or 0)
 
     if live:
         frases.append(f"marcador actual {gl}-{gv}")
 
     if contexto["apoyo_mercado"] == "a_favor":
-        frases.append("el mercado acompaña la lectura")
+        frases.append("mercado a favor")
     elif contexto["apoyo_mercado"] == "en_contra":
-        frases.append("el mercado va en contra de la lectura")
+        frases.append("mercado en contra")
     else:
-        frases.append("sin apoyo claro del mercado")
+        frases.append("mercado sin confirmar")
 
     racha_local = row_dict.get("racha_local")
     racha_visitante = row_dict.get("racha_visitante")
@@ -1032,6 +1249,11 @@ def contexto_simple(row_dict):
     elif row_dict.get("goles") == "Over 2.5":
         frases.append("se espera un partido abierto")
 
+    if prediccion != "Empate":
+        frases.append(f"{inclinacion} para {prediccion.lower()}")
+    if prioridad >= 95 and len(frases) < 4:
+        frases.append("torneo grande, márgenes cortos")
+
     return ", ".join(frases[:3])
 
 
@@ -1044,44 +1266,57 @@ def razon_simple(row_dict):
     live = _es_partido_en_vivo(row_dict)
     gl, gv = _marcador_actual(row_dict)
     lado_marcador = _lado_marcador(row_dict)
+    decision = row_dict.get("decision_simple")
+    disciplina = row_dict.get("disciplina_simple")
+    perfil_riesgo = str(row_dict.get("perfil_riesgo", "equilibrado")).lower()
+    inclinacion = _frase_inclinacion(prob_top, ventaja)
+    jerarquia_lado = contexto.get("jerarquia_lado")
+    jerarquia_diff = abs(float(contexto.get("jerarquia_diff", 0) or 0))
 
     if live:
-        if row_dict.get("decision_simple") == "Apostar":
-            return f"El partido va {gl}-{gv} y la lectura sigue favoreciendo a {prediccion.lower()}."
-        if row_dict.get("decision_simple") == "Mirar":
+        if decision == "Apostar":
+            return f"El partido va {gl}-{gv} y la lectura del juego sigue favoreciendo a {prediccion.lower()}; es una entrada razonable."
+        if decision == "Mirar":
             if lado_marcador == contexto["lado_predicho"]:
-                return f"El marcador va {gl}-{gv} y la lectura del juego sigue en esa dirección."
+                return f"El marcador va {gl}-{gv} y el desarrollo sigue apoyando la lectura."
             if gl == gv:
                 return f"Con el {gl}-{gv} actual, el partido sigue abierto y merece seguimiento."
-            return f"El partido va {gl}-{gv}; hay señales para seguirlo, pero no para entrar fuerte."
+            return f"El partido va {gl}-{gv}; hay señales mixtas y por ahora conviene seguirlo."
         if lado_marcador != "empate" and lado_marcador != contexto["lado_predicho"]:
             return f"El marcador actual va {gl}-{gv} en contra de la lectura previa; mejor no forzar apuesta."
         return f"Con el {gl}-{gv} actual no hay una lectura lo bastante limpia para recomendar entrada."
 
-    if row_dict.get("decision_simple") == "Apostar":
+    if decision == "Apostar":
         if prediccion == "Gana el local":
             if contexto["lado_bajas"] == "visitante":
-                return f"El local queda mejor parado y además el rival llega más limitado ({round(prob_top,1)}%)."
+                return f"El local queda mejor parado y además el rival llega más limitado; por eso hoy es la mejor entrada disponible."
             if lado_momento == "local":
-                return f"El local llega mejor y el partido se inclina hacia su lado ({round(prob_top,1)}%)."
-            return f"Hay una ventaja clara para el local y la lectura general acompaña ({round(prob_top,1)}%)."
+                return f"El local llega mejor y el cruce se inclina hacia su lado; hay base suficiente para entrar."
+            return f"Hay {inclinacion} para el local y la lectura general acompaña; se puede considerar apuesta."
         if prediccion == "Gana el visitante":
             if contexto["lado_bajas"] == "local":
-                return f"El visitante queda mejor parado y el local llega más condicionado ({round(prob_top,1)}%)."
+                return f"El visitante queda mejor parado y el local llega más condicionado; por eso gana peso la entrada."
             if lado_momento == "visitante":
-                return f"El visitante llega más fuerte y hoy parece tener ventaja ({round(prob_top,1)}%)."
-            return f"El visitante tiene una señal bastante limpia para este partido ({round(prob_top,1)}%)."
-        return f"El empate toma fuerza en un partido muy cerrado ({round(prob_top,1)}%)."
+                return f"El visitante llega más fuerte y hoy parece tener una oportunidad real para imponerse."
+            return f"El visitante tiene una señal bastante limpia para este partido y por eso sube a apuesta."
+        return "El empate toma fuerza en un partido muy cerrado y con señales parejas."
 
-    if row_dict.get("decision_simple") == "Mirar":
+    if decision == "Mirar":
         if prediccion == "Empate":
             return "Se perfila un partido muy cerrado, útil para seguirlo pero no para entrar fuerte."
+        if jerarquia_lado and jerarquia_lado != contexto["lado_predicho"] and jerarquia_diff >= 8:
+            rival = "visitante" if jerarquia_lado == "visitante" else "local"
+            return f"La jerarquía futbolística favorece más al {rival}; mejor no correr con una lectura forzada."
         if contexto["apoyo_mercado"] == "en_contra":
-            return f"Hay una lectura a favor de {prediccion.lower()}, pero el mercado manda una señal contraria."
+            return f"Hay lectura a favor de {prediccion.lower()}, pero el mercado manda una señal contraria y eso enfría la entrada."
         if not mercado_ok:
+            if disciplina == "No tocar":
+                return f"Existe una lectura leve hacia {prediccion.lower()}, pero hoy no está lo bastante limpia para entrar."
+            if perfil_riesgo == "agresivo":
+                return f"Hay {inclinacion} hacia {prediccion.lower()}; en modo agresivo se puede seguir como entrada pequeña."
             return f"Hay una inclinación hacia {prediccion.lower()}, pero el mercado todavía no lo respalda del todo."
         if diff_ppm <= 0.2 or ventaja < 5:
-            return f"Hay una ligera ventaja para {prediccion.lower()}, pero el partido sigue siendo delicado."
+            return f"El partido es fino, aunque deja una ligera ventaja para {prediccion.lower()}."
         return f"La lectura favorece a {prediccion.lower()}, aunque todavía no es una señal fuerte."
 
     if ventaja < 4:
@@ -1123,6 +1358,12 @@ def disciplina_simple(row_dict):
     aprendizaje_score = float(row_dict.get("aprendizaje_score", 0) or 0)
     aprendizaje_favorable = bool(row_dict.get("aprendizaje_favorable", False))
     aprendizaje_desfavorable = bool(row_dict.get("aprendizaje_desfavorable", False))
+    perfil_riesgo = row_dict.get("perfil_riesgo", "equilibrado")
+    ajustes_perfil = ajustes_perfil_riesgo(perfil_riesgo)
+    prob_delta = float(ajustes_perfil.get("prob_delta", 0) or 0)
+    conf_delta = float(ajustes_perfil.get("conf_delta", 0) or 0)
+    ventaja_delta = float(ajustes_perfil.get("ventaja_delta", 0) or 0)
+    consenso_delta = float(ajustes_perfil.get("consenso_delta", 0) or 0)
     premium_contexto = prioridad_liga >= 85 and contexto["diff_ppm"] >= 0.24
     premium_torneo = prioridad_liga >= 95
 
@@ -1181,8 +1422,8 @@ def disciplina_simple(row_dict):
             if (
                 premium_torneo and
                 prediccion != "Empate" and
-                prob_top >= 44 and
-                ventaja_prob_pct >= 12 and
+                prob_top >= max(40, 44 + prob_delta) and
+                ventaja_prob_pct >= max(10, 12 + ventaja_delta) and
                 consenso["nivel"] != "bajo"
             ):
                 return "Entrada pequeña"
@@ -1201,7 +1442,7 @@ def disciplina_simple(row_dict):
     if decision == "Apostar":
         if lectura_fuerte and not live:
             return "Apuesta fuerte"
-        if premium_torneo and prediccion != "Empate" and ventaja_prob_pct >= 12 and consenso["score"] >= -0.75:
+        if premium_torneo and prediccion != "Empate" and ventaja_prob_pct >= max(10, 12 + ventaja_delta) and consenso["score"] >= (-0.75 + consenso_delta):
             return "Apuesta pequeña"
         if lectura_apostable and (mercado_verificado or premium_contexto or aprendizaje_favorable) and consenso["score"] >= 0.75:
             return "Apuesta pequeña"
@@ -1270,6 +1511,366 @@ def riesgo_simple(row_dict):
     return "Riesgo medio"
 
 
+def asesor_apuesta(row_dict):
+    perfil = str(row_dict.get("perfil_riesgo", "equilibrado")).lower()
+    contexto = _contexto_competitivo(row_dict)
+    prediccion, prob_top = _prediccion_base(row_dict)
+    ventaja = _ventaja_prediccion(row_dict)
+    local = float(row_dict.get("prob_local", 0) or 0)
+    empate = float(row_dict.get("prob_empate", 0) or 0)
+    visitante = float(row_dict.get("prob_visitante", 0) or 0)
+    local_empate = float(row_dict.get("prob_local_empate", 0) or 0)
+    visitante_empate = float(row_dict.get("prob_visitante_empate", 0) or 0)
+    over_15 = float(row_dict.get("prob_over_15", 0) or 0)
+    over_25 = float(row_dict.get("prob_over_25", 0) or 0)
+    under_35 = float(row_dict.get("prob_under_35", 0) or 0)
+    under_45 = float(row_dict.get("prob_under_45", 0) or 0)
+    btts = float(row_dict.get("prob_btts", 0) or 0)
+    local_anota = float(row_dict.get("prob_local_anota", 0) or 0)
+    visitante_anota = float(row_dict.get("prob_visitante_anota", 0) or 0)
+    apoyo_mercado = contexto["apoyo_mercado"]
+    jerarquia_lado = contexto.get("jerarquia_lado")
+    jerarquia_diff = abs(float(contexto.get("jerarquia_diff", 0) or 0))
+    contexto_score = float(contexto.get("score", 0) or 0)
+    goles_modelo = str(row_dict.get("goles", "") or "")
+    consenso_score = float(row_dict.get("consenso_score", 0) or 0)
+    prioridad_liga = float(row_dict.get("prioridad_liga", 0) or 0)
+    calidad_mercado, market_bonus = _calidad_mercado(row_dict)
+    once_local = bool(row_dict.get("once_confirmado_local"))
+    once_visitante = bool(row_dict.get("once_confirmado_visitante"))
+    alineacion_confirmada = bool(row_dict.get("alineacion_confirmada"))
+    bajas_local = float(row_dict.get("bajas_local", 0) or 0)
+    bajas_visitante = float(row_dict.get("bajas_visitante", 0) or 0)
+
+    config = {
+        "conservador": {"win": 61, "dc": 74, "goals": 75, "btts": 68, "draw": 34, "score": 71, "min_pick": 8.0},
+        "equilibrado": {"win": 56, "dc": 70, "goals": 72, "btts": 65, "draw": 32, "score": 65, "min_pick": 5.5},
+        "agresivo": {"win": 51, "dc": 66, "goals": 68, "btts": 61, "draw": 30, "score": 59, "min_pick": 3.5},
+    }.get(perfil, {"win": 56, "dc": 70, "goals": 72, "btts": 65, "draw": 32, "score": 65, "min_pick": 5.5})
+
+    candidatos = []
+
+    def confianza_desde_prob(prob):
+        if prob >= 85:
+            return "Muy alta"
+        if prob >= 78:
+            return "Alta"
+        if prob >= 70:
+            return "Media-alta"
+        if prob >= 60:
+            return "Media"
+        return "Baja"
+
+    def riesgo_desde_prob(prob):
+        if prob >= 85:
+            return "Riesgo bajo"
+        if prob >= 70:
+            return "Riesgo medio"
+        return "Riesgo alto"
+
+    def probabilidad_compuesta(prob, valor, score, sesgo_lado=None, categoria=None):
+        base = prob
+
+        base += max(-6.0, min(9.0, valor * 0.45))
+        base += max(-7.0, min(8.0, score * 0.55))
+        base += max(-7.0, min(6.0, contexto_score * 1.6))
+        base += max(-8.0, min(7.0, consenso_score * 2.2))
+        base += max(-3.0, min(4.0, market_bonus * 3.0))
+
+        if prioridad_liga >= 90:
+            base += 1.8
+        elif prioridad_liga >= 75:
+            base += 0.9
+        elif prioridad_liga <= 30:
+            base -= 0.8
+
+        if alineacion_confirmada:
+            base += 1.2
+        if once_local and once_visitante:
+            base += 0.8
+
+        if sesgo_lado == "local":
+            base += max(-3.5, min(2.0, (bajas_visitante - bajas_local) * 0.7))
+        elif sesgo_lado == "visitante":
+            base += max(-3.5, min(2.0, (bajas_local - bajas_visitante) * 0.7))
+
+        if sesgo_lado and jerarquia_lado == sesgo_lado:
+            base += 3.5 if jerarquia_diff >= 10 else 1.5
+        elif sesgo_lado and jerarquia_lado and jerarquia_lado != sesgo_lado:
+            base -= 5.5 if jerarquia_diff >= 10 else 2.2
+
+        if categoria == "under":
+            if calidad_mercado == "debil":
+                base -= 1.5
+            if abs(local - visitante) <= 7:
+                base += 1.2
+        elif categoria == "dc":
+            if jerarquia_lado == sesgo_lado:
+                base += 1.4
+            if contexto_score < 0:
+                base -= 0.8
+        elif categoria == "win":
+            if ventaja >= 10:
+                base += 1.4
+            if contexto_score < 0:
+                base -= 1.6
+        elif categoria == "score":
+            if local_anota >= 75 or visitante_anota >= 75:
+                base += 1.0
+        elif categoria == "draw":
+            if abs(local - visitante) <= 5 and abs(contexto_score) <= 1:
+                base += 2.0
+
+        return round(max(45.0, min(92.0, base)), 1)
+
+    def add(nombre, mercado, prob, base, claves, sesgo_lado=None, categoria=None):
+        if prob <= 0:
+            return
+
+        valor = prob - base
+        score = valor
+        if contexto_score >= 3:
+            score += 2.5
+        elif contexto_score >= 1:
+            score += 1.0
+
+        if apoyo_mercado == "a_favor":
+            score += 1.5
+        elif apoyo_mercado == "en_contra":
+            score -= 2.0
+
+        if sesgo_lado and jerarquia_lado == sesgo_lado:
+            score += 4.5 if jerarquia_diff >= 10 else 2.0
+        elif sesgo_lado and jerarquia_lado and jerarquia_lado != sesgo_lado:
+            score -= 8.0 if jerarquia_diff >= 10 else 4.0
+
+        if categoria in {"win", "dc", "score"} and sesgo_lado and jerarquia_lado == sesgo_lado and contexto_score < 0:
+            score += 2.0
+        if categoria in {"win", "dc"} and sesgo_lado and jerarquia_lado and jerarquia_lado != sesgo_lado and contexto_score < 0:
+            score -= 2.5
+
+        if categoria == "under":
+            if "under" in goles_modelo.lower():
+                score += 3.5
+            if abs(local - visitante) <= 9:
+                score += 1.2
+            if max(local_anota, visitante_anota) >= 78:
+                score -= 2.0
+            if btts >= 62 or over_25 >= 56:
+                score -= 1.5
+            if mercado == "Under 4.5":
+                score -= 6.5
+                if under_35 >= 76:
+                    score -= 1.5
+        elif categoria == "over":
+            if "over" in goles_modelo.lower():
+                score += 3.5
+            if local_anota >= 72 and visitante_anota >= 58:
+                score += 2.0
+            if under_35 >= 78:
+                score -= 2.2
+            if mercado == "Over 1.5":
+                score -= 4.0
+        elif categoria == "btts":
+            if local_anota >= 70 and visitante_anota >= 62:
+                score += 2.5
+            if under_35 >= 79:
+                score -= 2.0
+        elif categoria == "score":
+            if sesgo_lado == "local" and local >= 47:
+                score += 1.5
+            if sesgo_lado == "visitante" and visitante >= 41:
+                score += 1.5
+        elif categoria == "dc":
+            if ventaja <= 8:
+                score += 1.2
+            if sesgo_lado and jerarquia_lado == sesgo_lado and jerarquia_diff >= 8:
+                score += 2.2
+        elif categoria == "draw":
+            if ventaja <= 6:
+                score += 2.0
+        elif categoria == "win":
+            if ventaja >= 9:
+                score += 2.0
+            if prob_top >= 54 and prediccion == nombre:
+                score += 2.0
+
+        prob_ajustada = probabilidad_compuesta(prob, valor, score, sesgo_lado, categoria)
+        candidatos.append(
+            {
+                "pick": nombre,
+                "mercado": mercado,
+                "prob": round(prob, 1),
+                "prob_ajustada": prob_ajustada,
+                "score": round(score, 2),
+                "valor": round(valor, 2),
+                "confianza": confianza_desde_prob(prob_ajustada),
+                "riesgo": riesgo_desde_prob(prob_ajustada),
+                "claves": claves,
+            }
+        )
+
+    add("Gana el local", "1X2", local, 42, "probabilidad base + localía + contexto", "local", "win")
+    add("Gana el visitante", "1X2", visitante, 42, "probabilidad base + jerarquía + contexto", "visitante", "win")
+    add("Empate", "1X2", empate, 28, "partido cerrado y margen corto", None, "draw")
+
+    add("Local o empate", "Doble oportunidad", local_empate, 60, "protección local con cobertura", "local", "dc")
+    add("Visitante o empate", "Doble oportunidad", visitante_empate, 60, "protección visitante con cobertura", "visitante", "dc")
+
+    add("Local anota al menos 1", "Equipo marca", local_anota, 66, "volumen ofensivo local", "local", "score")
+    add("Visitante anota al menos 1", "Equipo marca", visitante_anota, 66, "respuesta ofensiva visitante", "visitante", "score")
+    add("Ambos anotan", "BTTS", btts, 58, "producción ofensiva de ambos", None, "btts")
+    add("Más de 1.5 goles", "Over 1.5", over_15, 72, "línea prudente de goles", None, "over")
+    add("Más de 2.5 goles", "Over 2.5", over_25, 52, "partido con techo ofensivo", None, "over")
+    add("Menos de 3.5 goles", "Under 3.5", under_35, 76, "ritmo controlado y margen amplio", None, "under")
+    add("Menos de 4.5 goles", "Under 4.5", under_45, 84, "mercado muy conservador", None, "under")
+
+    def aplicar_coherencia(candidatos):
+        if not candidatos:
+            return candidatos
+
+        idx = {(c["pick"], c["mercado"]): i for i, c in enumerate(candidatos)}
+
+        def touch(pick, mercado):
+            pos = idx.get((pick, mercado))
+            return candidatos[pos] if pos is not None else None
+
+        def floor_prob(pick, mercado, minimum):
+            cand = touch(pick, mercado)
+            if cand is None:
+                return
+            cand["prob_ajustada"] = round(max(float(cand["prob_ajustada"]), float(minimum)), 1)
+            cand["confianza"] = confianza_desde_prob(cand["prob_ajustada"])
+            cand["riesgo"] = riesgo_desde_prob(cand["prob_ajustada"])
+
+        def bump_score(pick, mercado, delta):
+            cand = touch(pick, mercado)
+            if cand is None:
+                return
+            cand["score"] = round(float(cand["score"]) + float(delta), 2)
+
+        def cap_score(pick, mercado, maximum):
+            cand = touch(pick, mercado)
+            if cand is None:
+                return
+            cand["score"] = round(min(float(cand["score"]), float(maximum)), 2)
+
+        gana_local = touch("Gana el local", "1X2")
+        gana_visitante = touch("Gana el visitante", "1X2")
+        local_dc = touch("Local o empate", "Doble oportunidad")
+        visitante_dc = touch("Visitante o empate", "Doble oportunidad")
+        local_score = touch("Local anota al menos 1", "Equipo marca")
+        visitante_score = touch("Visitante anota al menos 1", "Equipo marca")
+        over15_c = touch("Más de 1.5 goles", "Over 1.5")
+        over25_c = touch("Más de 2.5 goles", "Over 2.5")
+        under35_c = touch("Menos de 3.5 goles", "Under 3.5")
+        under45_c = touch("Menos de 4.5 goles", "Under 4.5")
+
+        if gana_local and local_dc:
+            floor_prob("Local o empate", "Doble oportunidad", gana_local["prob_ajustada"] + 10)
+        if gana_visitante and visitante_dc:
+            floor_prob("Visitante o empate", "Doble oportunidad", gana_visitante["prob_ajustada"] + 10)
+        if gana_local and local_score:
+            floor_prob("Local anota al menos 1", "Equipo marca", gana_local["prob_ajustada"] + 6)
+        if gana_visitante and visitante_score:
+            floor_prob("Visitante anota al menos 1", "Equipo marca", gana_visitante["prob_ajustada"] + 6)
+        if over25_c and over15_c:
+            floor_prob("Más de 1.5 goles", "Over 1.5", over25_c["prob_ajustada"] + 10)
+        if under35_c and under45_c:
+            floor_prob("Menos de 4.5 goles", "Under 4.5", under35_c["prob_ajustada"] + 6)
+
+        if jerarquia_lado == "visitante" and jerarquia_diff >= 8:
+            bump_score("Visitante o empate", "Doble oportunidad", 5.0)
+            bump_score("Visitante anota al menos 1", "Equipo marca", 3.0)
+            bump_score("Gana el visitante", "1X2", 3.0)
+            bump_score("Local o empate", "Doble oportunidad", -4.0)
+            bump_score("Gana el local", "1X2", -5.0)
+            if contexto_score < 0:
+                bump_score("Menos de 3.5 goles", "Under 3.5", -1.0)
+        elif jerarquia_lado == "local" and jerarquia_diff >= 8:
+            bump_score("Local o empate", "Doble oportunidad", 4.0)
+            bump_score("Local anota al menos 1", "Equipo marca", 3.0)
+            bump_score("Gana el local", "1X2", 3.0)
+            bump_score("Visitante o empate", "Doble oportunidad", -3.5)
+            bump_score("Gana el visitante", "1X2", -4.5)
+
+        if contexto_score <= -2:
+            if jerarquia_lado == "visitante":
+                bump_score("Visitante o empate", "Doble oportunidad", 2.5)
+                bump_score("Visitante anota al menos 1", "Equipo marca", 2.0)
+            elif jerarquia_lado == "local":
+                bump_score("Local o empate", "Doble oportunidad", 2.5)
+                bump_score("Local anota al menos 1", "Equipo marca", 2.0)
+
+        if under45_c and under35_c:
+            cap_score("Menos de 4.5 goles", "Under 4.5", under35_c["score"] - 0.6)
+        if over15_c and over25_c:
+            cap_score("Más de 1.5 goles", "Over 1.5", over25_c["score"] - 0.4)
+
+        return candidatos
+
+    if not candidatos:
+        return {
+            "pick_recomendado": prediccion,
+            "mercado_recomendado": "Sin mercado claro",
+            "probabilidad_pick": round(prob_top, 1),
+            "confianza_pick": "Baja",
+            "accion_pick": "Evitar",
+            "claves_pick": "señales mezcladas",
+            "riesgo_pick": "Riesgo alto",
+            "valor_pick": 0.0,
+            "top_picks": [],
+        }
+
+    candidatos = aplicar_coherencia(candidatos)
+    candidatos = [c for c in candidatos if c["score"] >= config["min_pick"]]
+    if not candidatos:
+        return {
+            "pick_recomendado": prediccion,
+            "mercado_recomendado": "Sin mercado claro",
+            "probabilidad_pick": round(prob_top, 1),
+            "confianza_pick": "Baja",
+            "claves_pick": "señales mezcladas",
+            "accion_pick": "Evitar",
+            "riesgo_pick": "Riesgo alto",
+            "valor_pick": 0.0,
+            "top_picks": [],
+        }
+
+    candidatos = sorted(candidatos, key=lambda x: (x["score"], x["prob_ajustada"], x["prob"]), reverse=True)
+    if len(candidatos) >= 2 and candidatos[0]["mercado"] in {"Under 4.5", "Over 1.5"}:
+        if candidatos[1]["score"] >= candidatos[0]["score"] - 3.5:
+            candidatos[0], candidatos[1] = candidatos[1], candidatos[0]
+    mejor = candidatos[0]
+    if mejor["prob_ajustada"] >= 85:
+        accion = "Apostar"
+        confianza = "Muy alta"
+    elif mejor["prob_ajustada"] >= 78:
+        accion = "Mirar" if perfil == "conservador" else "Apostar"
+        confianza = "Alta"
+    elif mejor["prob_ajustada"] >= 70:
+        accion = "Mirar" if perfil == "conservador" else "Apostar"
+        confianza = "Media-alta"
+    elif mejor["prob_ajustada"] >= 60:
+        accion = "Mirar"
+        confianza = "Media"
+    else:
+        accion = "Evitar"
+        confianza = "Baja"
+
+    return {
+        "pick_recomendado": mejor["pick"],
+        "mercado_recomendado": mejor["mercado"],
+        "probabilidad_pick": mejor["prob"],
+        "confianza_pick": confianza,
+        "accion_pick": accion,
+        "claves_pick": mejor["claves"],
+        "riesgo_pick": mejor["riesgo"],
+        "valor_pick": mejor["valor"],
+        "top_picks": candidatos[:3],
+    }
+
+
 def _ganador_desde_prediccion_simple(prediccion):
     mapping = {
         "Gana el local": "Gana local",
@@ -1283,7 +1884,13 @@ def _promover_mejores_oportunidades(df):
     if df.empty or "decision_simple" not in df.columns:
         return df
 
-    if (df["decision_simple"] == "Apostar").any():
+    perfil_riesgo = str(df.get("perfil_riesgo", pd.Series(["equilibrado"])).iloc[0] or "equilibrado")
+    ajustes_perfil = ajustes_perfil_riesgo(perfil_riesgo)
+    promo_edge_min = float(ajustes_perfil.get("promo_edge_min", 2.0) or 2.0)
+    max_promociones = int(ajustes_perfil.get("promociones_max", 2) or 2)
+    apuestas_actuales = int((df["decision_simple"] == "Apostar").sum())
+
+    if apuestas_actuales >= max_promociones:
         return df
 
     premium_cond = (
@@ -1298,7 +1905,7 @@ def _promover_mejores_oportunidades(df):
         (~df["trampa"].fillna(False)) &
         (
             (
-                (df["mejor_edge_pct"].fillna(0) >= 2.0) &
+                (df["mejor_edge_pct"].fillna(0) >= promo_edge_min) &
                 (df["prioridad_liga"].fillna(0) >= 70)
             ) |
             premium_cond
@@ -1327,7 +1934,9 @@ def _promover_mejores_oportunidades(df):
         ascending=[False, False, False],
     )
 
-    max_promociones = 3 if len(elegibles) >= 4 else 2 if len(elegibles) >= 2 else 1
+    max_promociones = min(max_promociones - apuestas_actuales, len(elegibles))
+    if max_promociones <= 0:
+        return df
     promos = elegibles.head(max_promociones)
     df_result = df.copy()
 
@@ -1479,7 +2088,7 @@ def generar_mercado(ganador, goles):
         return "Partido cerrado"
 
 
-def analizar_partidos(df, calibracion=None):
+def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
     calibracion = calibracion or {}
     min_edge = calibracion.get("min_edge", 0.03)
     confianza_bonus = calibracion.get("confianza_bonus", 0)
@@ -1496,6 +2105,13 @@ def analizar_partidos(df, calibracion=None):
 
         prob_local, prob_empate, prob_visitante = calcular_1x2(matriz)
         over, under = calcular_over_under(matriz)
+        mercados_extra = calcular_mercados_adicionales(matriz)
+        mercados_extra, incoherencias_mercado = validar_coherencia_mercados(
+            prob_local,
+            prob_empate,
+            prob_visitante,
+            mercados_extra,
+        )
 
         edge_local = prob_local - (1 / row["cuota_local"])
         edge_visitante = prob_visitante - (1 / row["cuota_visitante"])
@@ -1538,6 +2154,7 @@ def analizar_partidos(df, calibracion=None):
             "Gana el visitante" if mejor == "Visitante" else
             "Empate"
         )
+        row["perfil_riesgo"] = perfil_riesgo
         row["decision_simple"] = "Apostar" if mejor_edge > min_edge and prob > 0.50 else "Mirar"
         row["ai_decision"] = "IA FUERTE" if prob > 0.58 and mejor_edge > 0.04 else "IA OBSERVAR"
 
@@ -1683,6 +2300,7 @@ def analizar_partidos(df, calibracion=None):
             "grupo_liga": row.get("grupo_liga"),
             "pais_liga": row.get("pais_liga"),
             "prioridad_liga": row.get("prioridad_liga"),
+            "perfil_riesgo": perfil_riesgo,
             "estado_partido": row.get("estado_partido"),
             "local": row.get("local"),
             "visitante": row.get("visitante"),
@@ -1739,6 +2357,23 @@ def analizar_partidos(df, calibracion=None):
             "cuota_local": row["cuota_local"],
             "cuota_empate": row["cuota_empate"],
             "cuota_visitante": row["cuota_visitante"],
+            "prob_local_empate": round(mercados_extra["local_empate"] * 100, 1),
+            "prob_visitante_empate": round(mercados_extra["visitante_empate"] * 100, 1),
+            "prob_gana_cualquiera": round(mercados_extra["gana_cualquiera"] * 100, 1),
+            "prob_over_15": round(mercados_extra["over_15"] * 100, 1),
+            "prob_over_25": round(mercados_extra["over_25"] * 100, 1),
+            "prob_under_35": round(mercados_extra["under_35"] * 100, 1),
+            "prob_under_45": round(mercados_extra["under_45"] * 100, 1),
+            "prob_btts": round(mercados_extra["btts"] * 100, 1),
+            "prob_local_anota": round(mercados_extra["local_anota"] * 100, 1),
+            "prob_visitante_anota": round(mercados_extra["visitante_anota"] * 100, 1),
+            "auditoria_inconsistencias": len(incoherencias_mercado),
+            "auditoria_partido_afectado": bool(incoherencias_mercado),
+            "auditoria_mercados_corregidos": ", ".join(sorted({item["mercado"] for item in incoherencias_mercado})) if incoherencias_mercado else "",
+            "auditoria_detalle": " | ".join(
+                f"{item['mercado']}: {item['antes']}->{item['despues']} ({item['motivo']})"
+                for item in incoherencias_mercado
+            ) if incoherencias_mercado else "",
             "fuente_cuotas": row.get("fuente_cuotas", "desconocida"),
             "market_match_score": row.get("market_match_score", 0),
             "bookmaker_count": row.get("bookmaker_count", 0),
@@ -1776,6 +2411,34 @@ def analizar_partidos(df, calibracion=None):
         row_result["riesgo_simple"] = riesgo_simple(row_result)
         row_result["contexto_simple"] = contexto_simple({**row.to_dict(), **row_result})
         row_result["razon_simple"] = razon_simple(row_result)
+        asesor = asesor_apuesta(row_result)
+        row_result["pick_recomendado"] = asesor["pick_recomendado"]
+        row_result["mercado_recomendado"] = asesor["mercado_recomendado"]
+        row_result["probabilidad_pick"] = asesor["probabilidad_pick"]
+        row_result["confianza_pick"] = asesor["confianza_pick"]
+        row_result["claves_pick"] = asesor["claves_pick"]
+        row_result["riesgo_pick"] = asesor.get("riesgo_pick", row_result["riesgo_simple"])
+        row_result["valor_pick"] = asesor.get("valor_pick", 0.0)
+        top_picks = asesor.get("top_picks", []) or []
+        for idx in range(3):
+            top = top_picks[idx] if idx < len(top_picks) else {}
+            n = idx + 1
+            row_result[f"pick_{n}"] = top.get("pick", "")
+            row_result[f"mercado_{n}"] = top.get("mercado", "")
+            row_result[f"prob_{n}"] = top.get("prob")
+            row_result[f"confianza_{n}"] = top.get("confianza", "")
+            row_result[f"riesgo_{n}"] = top.get("riesgo", "")
+            row_result[f"valor_{n}"] = top.get("valor", 0.0)
+            row_result[f"claves_{n}"] = top.get("claves", "")
+        if asesor["accion_pick"] == "Apostar" and row_result["decision_simple"] != "Apostar":
+            row_result["decision_simple"] = "Apostar"
+            row_result["disciplina_simple"] = "Apuesta pequeña"
+            row_result["riesgo_simple"] = "Riesgo medio"
+        elif asesor["accion_pick"] == "Mirar" and row_result["decision_simple"] == "Evitar":
+            row_result["decision_simple"] = "Mirar"
+            if row_result["disciplina_simple"] == "No tocar":
+                row_result["disciplina_simple"] = "Entrada pequeña"
+                row_result["riesgo_simple"] = "Riesgo medio"
 
         resultados.append(row_result)
 

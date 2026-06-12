@@ -10,6 +10,7 @@ from tracker import (
 )
 from model import analizar_partidos
 from api_data import get_matches_api, get_last_api_status
+from openai_analysis import analizar_partidos_con_openai, openai_analisis_disponible
 
 VENTANA_PARTIDOS = "hoy y próximos 2 días"
 DECISION_ORDEN = {"Apostar": 0, "Mirar": 1, "Evitar": 2}
@@ -28,8 +29,13 @@ def cargar_partidos():
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def cargar_resultados(df, calibracion):
-    return analizar_partidos(df.copy(), calibracion=calibracion)
+def cargar_resultados(df, calibracion, perfil_riesgo):
+    return analizar_partidos(df.copy(), calibracion=calibracion, perfil_riesgo=perfil_riesgo)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cargar_resultados_openai(df):
+    return analizar_partidos_con_openai(df.copy(), max_partidos=12)
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -97,6 +103,46 @@ def preparar_resultados_ui(df):
         "riesgo_simple": "Riesgo medio",
         "contexto_simple": "Sin contexto adicional",
         "razon_simple": "",
+        "perfil_riesgo": "equilibrado",
+        "pick_recomendado": "",
+        "mercado_recomendado": "",
+        "probabilidad_pick": None,
+        "confianza_pick": "",
+        "claves_pick": "",
+        "riesgo_pick": "",
+        "valor_pick": 0.0,
+        "pick_1": "",
+        "mercado_1": "",
+        "prob_1": None,
+        "confianza_1": "",
+        "riesgo_1": "",
+        "valor_1": 0.0,
+        "claves_1": "",
+        "pick_2": "",
+        "mercado_2": "",
+        "prob_2": None,
+        "confianza_2": "",
+        "riesgo_2": "",
+        "valor_2": 0.0,
+        "claves_2": "",
+        "pick_3": "",
+        "mercado_3": "",
+        "prob_3": None,
+        "confianza_3": "",
+        "riesgo_3": "",
+        "valor_3": 0.0,
+        "claves_3": "",
+        "auditoria_inconsistencias": 0,
+        "auditoria_partido_afectado": False,
+        "auditoria_mercados_corregidos": "",
+        "auditoria_detalle": "",
+        "decision_ia": "",
+        "prediccion_ia": "",
+        "veredicto_ia": "",
+        "mercado_ia": "",
+        "confianza_ia": None,
+        "analisis_ia": "",
+        "claves_ia": "",
         "prioridad_liga": 0,
     }
 
@@ -104,7 +150,10 @@ def preparar_resultados_ui(df):
         if col not in vista.columns:
             vista[col] = value
         else:
-            vista[col] = vista[col].fillna(value)
+            if value is None:
+                vista[col] = vista[col].where(vista[col].notna(), None)
+            else:
+                vista[col] = vista[col].fillna(value)
 
     vista["decision_rank"] = vista["decision_simple"].map(DECISION_ORDEN).fillna(9).astype(int)
     vista["prioridad_liga"] = vista["prioridad_liga"].fillna(0)
@@ -190,8 +239,13 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
     estado_top = row.get("estado_partido", "NS")
     decision_top = row.get("decision_simple", "Mirar")
     pred_top = row.get("prediccion_simple", "Partido para mirar")
+    pick_top = row.get("pick_recomendado") or pred_top
+    mercado_top = row.get("mercado_recomendado") or "1X2"
     disciplina_top = row.get("disciplina_simple", "Solo seguimiento")
+    riesgo_top = row.get("riesgo_simple", "Riesgo medio")
     consenso_top = row.get("consenso_analitico", "")
+    analisis_ia = str(row.get("analisis_ia", "") or "").strip()
+    claves_ia = str(row.get("claves_ia", "") or "").strip()
     logo_local = row.get("logo_local") or ""
     logo_visitante = row.get("logo_visitante") or ""
     marcador_local = row.get("marcador_local", 0)
@@ -243,15 +297,26 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
             "<div style='min-width:120px;display:flex;flex-direction:column;align-items:center;"
             "justify-content:center;text-align:center;'>"
             f"{badge_decision(decision_top)}"
-            f"<div style='font-size:11px;color:{COLOR_TEXT_MAIN};font-weight:700;text-align:center;margin-top:4px;'>{pred_top}</div>"
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MAIN};font-weight:700;text-align:center;margin-top:4px;'>{pick_top}</div>"
+            f"<div style='font-size:10px;color:{COLOR_TEXT_MUTED};font-weight:700;text-align:center;margin-top:2px;'>{mercado_top}</div>"
             + (
                 f"<div style='font-size:10px;color:{COLOR_TEXT_MUTED};font-weight:700;text-align:center;margin-top:3px;'>Consenso {consenso_top}</div>"
                 if consenso_top else
                 ""
             )
             + (
-                f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};font-weight:600;text-align:center;margin-top:3px;'>{disciplina_top}</div>"
+                f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};font-weight:600;text-align:center;margin-top:3px;'>{disciplina_top} · {riesgo_top}</div>"
                 if mostrar_disciplina else
+                ""
+            )
+            + (
+                f"<div style='font-size:10px;color:{COLOR_TEXT_MUTED};font-weight:600;text-align:center;margin-top:3px;'>Socio IA: {analisis_ia}</div>"
+                if analisis_ia else
+                ""
+            )
+            + (
+                f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};font-weight:600;text-align:center;margin-top:3px;'>Claves: {claves_ia}</div>"
+                if claves_ia else
                 ""
             )
             + "</div><div></div></div>"
@@ -279,6 +344,32 @@ def render_partido(row):
     consenso = str(row.get("consenso_analitico", "") or "").strip()
     consenso_score = row.get("consenso_score", "")
     consenso_notas = str(row.get("consenso_notas", "") or "").strip()
+    analisis_ia = str(row.get("analisis_ia", "") or "").strip()
+    veredicto_ia = str(row.get("veredicto_ia", "") or "").strip()
+    decision_ia = str(row.get("decision_ia", "") or "").strip()
+    mercado_ia = str(row.get("mercado_ia", "") or "").strip()
+    claves_ia = str(row.get("claves_ia", "") or "").strip()
+    pick_recomendado = row.get("pick_recomendado") or row.get("prediccion_simple", "Partido para mirar")
+    mercado_recomendado = row.get("mercado_recomendado") or "1X2"
+    probabilidad_pick = row.get("probabilidad_pick")
+    confianza_pick = row.get("confianza_pick", "")
+    claves_pick = row.get("claves_pick", "")
+    top_picks = []
+    for idx in range(1, 4):
+        pick = str(row.get(f"pick_{idx}", "") or "").strip()
+        mercado = str(row.get(f"mercado_{idx}", "") or "").strip()
+        prob = row.get(f"prob_{idx}")
+        if pick and mercado and prob not in ("", None):
+            top_picks.append(
+                {
+                    "label": ["Mejor pick", "Segundo pick", "Tercer pick"][idx - 1],
+                    "pick": pick,
+                    "mercado": mercado,
+                    "prob": prob,
+                    "confianza": row.get(f"confianza_{idx}", ""),
+                    "riesgo": row.get(f"riesgo_{idx}", ""),
+                }
+            )
 
     st.markdown(f"<div style='padding:10px 0;border-bottom:1px solid {COLOR_BORDER};'>", unsafe_allow_html=True)
 
@@ -312,7 +403,7 @@ def render_partido(row):
         st.markdown(
             f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};'>"
             f"{row.get('hora_partido', '')} | {badge_estado(row.get('estado_partido', 'NS'))} | "
-            f"Predicción: <b>{row.get('prediccion_simple', 'Partido para mirar')}</b>"
+            f"Pick: <b>{pick_recomendado}</b> · Mercado: <b>{mercado_recomendado}</b>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -328,15 +419,36 @@ def render_partido(row):
     with top2:
         st.markdown(badge_decision(row.get("decision_simple", "Mirar")), unsafe_allow_html=True)
         st.markdown(
-            f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:8px;'><b>{row.get('prediccion_simple', 'Partido para mirar')}</b></div>",
+            f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:8px;'><b>{pick_recomendado}</b></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'><b>{mercado_recomendado}</b></div>",
             unsafe_allow_html=True,
         )
         st.markdown(
             f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>{row.get('disciplina_simple', 'Solo seguimiento')}</b> · {row.get('riesgo_simple', 'Riesgo medio')}</div>",
             unsafe_allow_html=True,
         )
+        if probabilidad_pick not in ("", None):
+            st.markdown(
+                f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Prob. estimada: <b>{probabilidad_pick}%</b> · Confianza: <b>{confianza_pick}</b></div>",
+                unsafe_allow_html=True,
+            )
 
     with top3:
+        if top_picks:
+            top_lines = "".join(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-bottom:4px;'><b>{item['label']}:</b> {item['pick']} · {item['mercado']} · <b>{item['prob']}%</b>"
+                + (f" · {item['confianza']}" if item["confianza"] else "")
+                + (f" · {item['riesgo']}" if item["riesgo"] else "")
+                + "</div>"
+                for item in top_picks
+            )
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-bottom:6px;'><b>Top mercados del partido</b></div>{top_lines}",
+                unsafe_allow_html=True,
+            )
         st.markdown(
             f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};'><b>Lectura rápida:</b> {row.get('contexto_simple', 'Sin contexto adicional')}</div>",
             unsafe_allow_html=True,
@@ -345,6 +457,28 @@ def render_partido(row):
             f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Conclusión:</b> {row.get('razon_simple', '')}</div>",
             unsafe_allow_html=True,
         )
+        if claves_pick:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Claves del pick:</b> {claves_pick}</div>",
+                unsafe_allow_html=True,
+            )
+        if analisis_ia:
+            auditor_tags = " · ".join([v for v in [veredicto_ia, decision_ia] if v])
+            etiqueta = f" ({auditor_tags})" if auditor_tags else ""
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-top:6px;'><b>Auditor IA{etiqueta}:</b> {analisis_ia}</div>",
+                unsafe_allow_html=True,
+            )
+        if mercado_ia:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Mercado sugerido por auditor:</b> {mercado_ia}</div>",
+                unsafe_allow_html=True,
+            )
+        if claves_ia:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Hallazgos del auditor:</b> {claves_ia}</div>",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -383,11 +517,13 @@ st.title("AI Predictor PRO")
 
 @st.fragment(run_every=LIVE_REFRESH_INTERVAL)
 def render_dashboard():
-    col_accion1, col_accion2 = st.columns([1, 1])
-    with col_accion1:
+    top_controls = st.columns([1, 1])
+    with top_controls[0]:
         actualizar_historial_btn = st.button("Actualizar historial")
-    with col_accion2:
+    with top_controls[1]:
         guardar_picks_btn = st.button("Guardar picks")
+    perfil_visible = "Agresivo"
+    perfil_riesgo = "agresivo"
 
     if actualizar_historial_btn:
         with st.spinner("Actualizando resultados del historial..."):
@@ -406,7 +542,9 @@ def render_dashboard():
 
     sincronizar_historial_automatico()
     calibracion = cargar_calibracion_modelo()
-    resultados = preparar_resultados_ui(cargar_resultados(df, calibracion))
+    resultados = preparar_resultados_ui(cargar_resultados(df, calibracion, perfil_riesgo))
+    if openai_analisis_disponible():
+        resultados = preparar_resultados_ui(cargar_resultados_openai(resultados))
     stats_historial = cargar_resumen_historial()
 
     if guardar_picks_btn:
@@ -434,6 +572,27 @@ def render_dashboard():
         st.metric("Próximos", proximos)
     with m3:
         st.metric("Partidos para apostar", picks_claros)
+
+    audit_total = int(resultados["auditoria_inconsistencias"].fillna(0).sum()) if "auditoria_inconsistencias" in resultados.columns else 0
+    audit_matches = int(resultados["auditoria_partido_afectado"].fillna(False).astype(bool).sum()) if "auditoria_partido_afectado" in resultados.columns else 0
+    audit_markets = 0
+    if "auditoria_mercados_corregidos" in resultados.columns:
+        corrected = set()
+        for raw in resultados["auditoria_mercados_corregidos"].fillna(""):
+            for item in [x.strip() for x in str(raw).split(",") if x.strip()]:
+                corrected.add(item)
+        audit_markets = len(corrected)
+
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        st.metric("Inconsistencias corregidas", audit_total)
+    with a2:
+        st.metric("Partidos afectados", audit_matches)
+    with a3:
+        st.metric("Mercados corregidos", audit_markets)
+
+    if openai_analisis_disponible():
+        st.caption("Socio analista IA activo como apoyo extra.")
 
     tab1, tab2 = st.tabs(["Partidos por liga", "Historial"])
 
