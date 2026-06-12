@@ -116,10 +116,14 @@ def preparar_resultados_ui(df):
         "score_pick": 0.0,
         "score_final": 0.0,
         "justificacion_ranking": "",
+        "mercado_observado": "",
+        "pick_observado": "",
+        "motivo_descarte": "",
         "cuota_1": None,
         "edge_1": 0.0,
         "ev_1": 0.0,
         "score_pick_1": 0.0,
+        "score_final_1": 0.0,
         "riesgo_pick": "",
         "valor_pick": 0.0,
         "pick_1": "",
@@ -139,6 +143,7 @@ def preparar_resultados_ui(df):
         "edge_2": 0.0,
         "ev_2": 0.0,
         "score_pick_2": 0.0,
+        "score_final_2": 0.0,
         "claves_2": "",
         "pick_3": "",
         "mercado_3": "",
@@ -150,6 +155,7 @@ def preparar_resultados_ui(df):
         "edge_3": 0.0,
         "ev_3": 0.0,
         "score_pick_3": 0.0,
+        "score_final_3": 0.0,
         "claves_3": "",
         "auditoria_inconsistencias": 0,
         "auditoria_partido_afectado": False,
@@ -346,6 +352,18 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
 
 
 def render_partido(row):
+    def _is_missing(value):
+        try:
+            return value in ("", None) or bool(value != value)
+        except Exception:
+            return value in ("", None)
+
+    def _fmt_pct(value):
+        return "—" if _is_missing(value) else f"{value}%"
+
+    def _fmt_num(value):
+        return "—" if _is_missing(value) else f"{value}"
+
     local = row.get("local")
     visitante = row.get("visitante")
     if (not local or not visitante) and row.get("partido"):
@@ -376,7 +394,12 @@ def render_partido(row):
     cuota_pick = row.get("cuota_pick")
     edge_pick = row.get("edge_pick", 0.0)
     ev_pick = row.get("ev_pick", 0.0)
+    score_final = row.get("score_final", 0.0)
     justificacion_ranking = str(row.get("justificacion_ranking", "") or "").strip()
+    mercado_observado = str(row.get("mercado_observado", "") or "").strip()
+    pick_observado = str(row.get("pick_observado", "") or "").strip()
+    motivo_descarte = str(row.get("motivo_descarte", "") or "").strip()
+    sin_valor_real = str(pick_recomendado).strip().lower() == "no hay picks con valor real"
     top_picks = []
     for idx in range(1, 4):
         pick = str(row.get(f"pick_{idx}", "") or "").strip()
@@ -394,6 +417,7 @@ def render_partido(row):
                     "cuota": row.get(f"cuota_{idx}"),
                     "edge": row.get(f"edge_{idx}", 0.0),
                     "ev": row.get(f"ev_{idx}", 0.0),
+                    "score_final": row.get(f"score_final_{idx}", 0.0),
                 }
             )
 
@@ -456,24 +480,19 @@ def render_partido(row):
             f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>{row.get('disciplina_simple', 'Solo seguimiento')}</b> · {row.get('riesgo_simple', 'Riesgo medio')}</div>",
             unsafe_allow_html=True,
         )
-        if probabilidad_pick not in ("", None):
-            st.markdown(
-                f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Prob. estimada: <b>{probabilidad_pick}%</b> · Confianza: <b>{confianza_pick}</b></div>"
-                + (
-                    f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'>Cuota: <b>{cuota_pick}</b> · Edge: <b>{edge_pick}%</b> · EV: <b>{ev_pick}%</b></div>"
-                    if cuota_pick not in ("", None) else
-                    ""
-                ),
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Prob. estimada: <b>{_fmt_pct(probabilidad_pick)}</b> · Confianza: <b>{confianza_pick or 'Evitar'}</b></div>"
+            f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'>Cuota: <b>{_fmt_num(cuota_pick)}</b> · Edge: <b>{_fmt_pct(edge_pick if not sin_valor_real else None)}</b> · EV: <b>{_fmt_pct(ev_pick if not sin_valor_real else None)}</b></div>",
+            unsafe_allow_html=True,
+        )
 
     with top3:
-        if top_picks:
+        if top_picks and not sin_valor_real:
             top_lines = "".join(
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-bottom:4px;'><b>{item['label']}:</b> {item['pick']} · {item['mercado']} · <b>{item['prob']}%</b>"
                 + (f" · {item['confianza']}" if item["confianza"] else "")
                 + (f" · {item['riesgo']}" if item["riesgo"] else "")
-                + (f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:2px;'>Cuota {item['cuota']} · Edge {item['edge']}% · EV {item['ev']}%</div>" if item["cuota"] not in ("", None) else "")
+                + (f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:2px;'>Cuota {item['cuota']} · Edge {item['edge']}% · EV {item['ev']}% · Score {item['score_final']}</div>" if item["cuota"] not in ("", None) else "")
                 + "</div>"
                 for item in top_picks
             )
@@ -481,20 +500,36 @@ def render_partido(row):
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-bottom:6px;'><b>Top mercados del partido</b></div>{top_lines}",
                 unsafe_allow_html=True,
             )
-        if justificacion_ranking:
+        elif sin_valor_real:
+            observado = f"{pick_observado} · {mercado_observado}" if pick_observado and mercado_observado else "Sin mercado defendible"
             st.markdown(
-                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Por qué este pick va primero:</b> {justificacion_ranking}</div>",
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-bottom:6px;'><b>Mejor mercado observado:</b> {observado}</div>",
                 unsafe_allow_html=True,
             )
-        st.markdown(
-            f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};'><b>Lectura rápida:</b> {row.get('contexto_simple', 'Sin contexto adicional')}</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Conclusión:</b> {row.get('razon_simple', '')}</div>",
-            unsafe_allow_html=True,
-        )
-        if claves_pick:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Por qué fue descartado:</b> {motivo_descarte or 'Ningún mercado supera los filtros mínimos de probabilidad, cuota, edge, EV y riesgo.'}</div>",
+                unsafe_allow_html=True,
+            )
+        if justificacion_ranking and not sin_valor_real:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Por qué este pick va primero:</b> {justificacion_ranking} · <b>Score final:</b> {score_final}</div>",
+                unsafe_allow_html=True,
+            )
+        if not sin_valor_real:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};'><b>Lectura rápida:</b> {row.get('contexto_simple', 'Sin contexto adicional')}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Conclusión:</b> {row.get('razon_simple', '')}</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Razón:</b> {motivo_descarte or 'Ningún mercado supera los filtros mínimos de probabilidad, cuota, edge, EV y riesgo.'}</div>",
+                unsafe_allow_html=True,
+            )
+        if claves_pick and not sin_valor_real:
             st.markdown(
                 f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Claves del pick:</b> {claves_pick}</div>",
                 unsafe_allow_html=True,

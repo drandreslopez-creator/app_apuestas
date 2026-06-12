@@ -2039,6 +2039,16 @@ def asesor_apuesta(row_dict):
 
     candidatos = aplicar_coherencia(candidatos)
     candidatos = [c for c in candidatos if c["score"] >= config["min_pick"]]
+    mejor_observado = None
+    if candidatos:
+        mejor_observado = max(
+            candidatos,
+            key=lambda x: (
+                x.get("score_final", 0.0),
+                x.get("score_rentabilidad", 0.0),
+                x.get("ev_pct", 0.0),
+            ),
+        )
     candidatos_filtrados = []
     for cand in candidatos:
         prob = float(cand.get("prob") or 0.0)
@@ -2070,7 +2080,11 @@ def asesor_apuesta(row_dict):
             "edge_pick": 0.0,
             "ev_pick": 0.0,
             "score_pick": 0.0,
+            "score_final": 0.0,
             "justificacion_ranking": "No hay picks con valor real",
+            "mercado_observado": mejor_observado.get("mercado", "") if mejor_observado else "",
+            "pick_observado": mejor_observado.get("pick", "") if mejor_observado else "",
+            "motivo_descarte": "Ningún mercado supera los filtros mínimos de probabilidad, cuota, edge, EV y riesgo.",
             "top_picks": [],
         }
 
@@ -2119,9 +2133,22 @@ def asesor_apuesta(row_dict):
         candidato_mas_probable = max(candidatos, key=lambda x: x.get("prob", 0.0))
         candidato_mayor_ev = max(candidatos, key=lambda x: x.get("ev_pct", 0.0))
         if candidato_mayor_ev["pick"] == mejor["pick"] and candidato_mayor_ev["mercado"] == mejor["mercado"]:
-            justificacion_ranking = "va primero por mayor valor esperado ajustado entre los mercados viables"
+            justificacion_ranking = (
+                f"{mejor['pick']} queda primero por mayor EV ajustado y score final "
+                f"{mejor.get('score_final', 0.0)}."
+            )
         elif candidato_mas_probable["pick"] != mejor["pick"] or candidato_mas_probable["mercado"] != mejor["mercado"]:
-            justificacion_ranking = "no es el de mayor probabilidad, pero ofrece mejor equilibrio entre cuota, edge, EV y riesgo"
+            segundo = candidatos[1]
+            motivo = "mejor equilibrio entre probabilidad, cuota, EV y riesgo"
+            if float(mejor.get("ev_pct", 0.0)) < float(segundo.get("ev_pct", 0.0)):
+                motivo = "fue penalizado el segundo por menor rentabilidad real del mercado o castigo estructural del tipo de apuesta"
+            if mejor.get("mercado") == "Equipo marca" and segundo.get("mercado") == "Doble oportunidad":
+                motivo = "el segundo fue penalizado por doble oportunidad y menor rentabilidad neta"
+            justificacion_ranking = (
+                f"{mejor['pick']} queda primero por mejor score final: {mejor.get('score_final', 0.0)} "
+                f"vs {segundo.get('score_final', 0.0)}. Aunque {segundo.get('pick', 'el segundo pick')} "
+                f"tiene EV {segundo.get('ev_pct', 0.0)}%, {motivo}."
+            )
 
     return {
         "pick_recomendado": mejor["pick"],
@@ -2138,6 +2165,9 @@ def asesor_apuesta(row_dict):
         "score_pick": mejor.get("score_pick"),
         "score_final": mejor.get("score_final", 0.0),
         "justificacion_ranking": justificacion_ranking,
+        "mercado_observado": "",
+        "pick_observado": "",
+        "motivo_descarte": "",
         "top_picks": candidatos[:3],
     }
 
@@ -2616,6 +2646,9 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         row_result["score_pick"] = asesor.get("score_pick", 0.0)
         row_result["score_final"] = asesor.get("score_final", 0.0)
         row_result["justificacion_ranking"] = asesor.get("justificacion_ranking", "")
+        row_result["mercado_observado"] = asesor.get("mercado_observado", "")
+        row_result["pick_observado"] = asesor.get("pick_observado", "")
+        row_result["motivo_descarte"] = asesor.get("motivo_descarte", "")
         top_picks = asesor.get("top_picks", []) or []
         for idx in range(3):
             top = top_picks[idx] if idx < len(top_picks) else {}
@@ -2630,6 +2663,7 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             row_result[f"edge_{n}"] = top.get("edge_pct", 0.0)
             row_result[f"ev_{n}"] = top.get("ev_pct", 0.0)
             row_result[f"score_pick_{n}"] = top.get("score_pick", 0.0)
+            row_result[f"score_final_{n}"] = top.get("score_final", 0.0)
             row_result[f"claves_{n}"] = top.get("claves", "")
         if top_picks:
             row_result["confianza_pick"] = top_picks[0].get("confianza", row_result["confianza_pick"])
