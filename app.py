@@ -109,6 +109,15 @@ def preparar_resultados_ui(df):
         "probabilidad_pick": None,
         "confianza_pick": "",
         "claves_pick": "",
+        "cuota_pick": None,
+        "edge_pick": 0.0,
+        "ev_pick": 0.0,
+        "score_pick": 0.0,
+        "justificacion_ranking": "",
+        "cuota_1": None,
+        "edge_1": 0.0,
+        "ev_1": 0.0,
+        "score_pick_1": 0.0,
         "riesgo_pick": "",
         "valor_pick": 0.0,
         "pick_1": "",
@@ -124,6 +133,10 @@ def preparar_resultados_ui(df):
         "confianza_2": "",
         "riesgo_2": "",
         "valor_2": 0.0,
+        "cuota_2": None,
+        "edge_2": 0.0,
+        "ev_2": 0.0,
+        "score_pick_2": 0.0,
         "claves_2": "",
         "pick_3": "",
         "mercado_3": "",
@@ -131,6 +144,10 @@ def preparar_resultados_ui(df):
         "confianza_3": "",
         "riesgo_3": "",
         "valor_3": 0.0,
+        "cuota_3": None,
+        "edge_3": 0.0,
+        "ev_3": 0.0,
+        "score_pick_3": 0.0,
         "claves_3": "",
         "auditoria_inconsistencias": 0,
         "auditoria_partido_afectado": False,
@@ -354,6 +371,10 @@ def render_partido(row):
     probabilidad_pick = row.get("probabilidad_pick")
     confianza_pick = row.get("confianza_pick", "")
     claves_pick = row.get("claves_pick", "")
+    cuota_pick = row.get("cuota_pick")
+    edge_pick = row.get("edge_pick", 0.0)
+    ev_pick = row.get("ev_pick", 0.0)
+    justificacion_ranking = str(row.get("justificacion_ranking", "") or "").strip()
     top_picks = []
     for idx in range(1, 4):
         pick = str(row.get(f"pick_{idx}", "") or "").strip()
@@ -368,6 +389,9 @@ def render_partido(row):
                     "prob": prob,
                     "confianza": row.get(f"confianza_{idx}", ""),
                     "riesgo": row.get(f"riesgo_{idx}", ""),
+                    "cuota": row.get(f"cuota_{idx}"),
+                    "edge": row.get(f"edge_{idx}", 0.0),
+                    "ev": row.get(f"ev_{idx}", 0.0),
                 }
             )
 
@@ -432,7 +456,12 @@ def render_partido(row):
         )
         if probabilidad_pick not in ("", None):
             st.markdown(
-                f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Prob. estimada: <b>{probabilidad_pick}%</b> · Confianza: <b>{confianza_pick}</b></div>",
+                f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Prob. estimada: <b>{probabilidad_pick}%</b> · Confianza: <b>{confianza_pick}</b></div>"
+                + (
+                    f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'>Cuota: <b>{cuota_pick}</b> · Edge: <b>{edge_pick}%</b> · EV: <b>{ev_pick}%</b></div>"
+                    if cuota_pick not in ("", None) else
+                    ""
+                ),
                 unsafe_allow_html=True,
             )
 
@@ -442,11 +471,17 @@ def render_partido(row):
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-bottom:4px;'><b>{item['label']}:</b> {item['pick']} · {item['mercado']} · <b>{item['prob']}%</b>"
                 + (f" · {item['confianza']}" if item["confianza"] else "")
                 + (f" · {item['riesgo']}" if item["riesgo"] else "")
+                + (f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:2px;'>Cuota {item['cuota']} · Edge {item['edge']}% · EV {item['ev']}%</div>" if item["cuota"] not in ("", None) else "")
                 + "</div>"
                 for item in top_picks
             )
             st.markdown(
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-bottom:6px;'><b>Top mercados del partido</b></div>{top_lines}",
+                unsafe_allow_html=True,
+            )
+        if justificacion_ranking:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Por qué este pick va primero:</b> {justificacion_ranking}</div>",
                 unsafe_allow_html=True,
             )
         st.markdown(
