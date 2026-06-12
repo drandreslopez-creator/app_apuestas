@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover - graceful fallback when SDK is absent
     OpenAI = None
 
 
-AI_DECISION_RANK = {"Evitar": 0, "Mirar": 1, "Apostar": 2}
+AI_DECISION_RANK = {"Evitar": 0, "No tocar": 0, "Mirar": 1, "Apostar": 2}
 AUDIT_MARKET_TO_FIELDS = {
     ("Gana local", "1X2"): ("Gana el local", "1X2", "prob_local"),
     ("Gana visitante", "1X2"): ("Gana el visitante", "1X2", "prob_visitante"),
@@ -77,7 +77,7 @@ def _seleccionar_para_ia(df, max_partidos=12):
 
     vista = df.copy()
     if "decision_rank" not in vista.columns:
-        vista["decision_rank"] = vista["decision_simple"].map({"Apostar": 0, "Mirar": 1, "Evitar": 2}).fillna(9)
+        vista["decision_rank"] = vista["decision_simple"].map({"Apostar": 0, "Mirar": 1, "No tocar": 2, "Evitar": 2}).fillna(9)
 
     vista["live_rank"] = vista["estado_partido"].isin(["LIVE", "HT", "1H", "2H"]).astype(int)
     vista["prioridad_rank"] = vista["prioridad_liga"].fillna(0)

@@ -1636,20 +1636,47 @@ def asesor_apuesta(row_dict):
             2,
         )
 
+    def cuota_score(cuota):
+        cuota = float(cuota or 0.0)
+        if cuota <= 0:
+            return 0.0
+        if cuota < 1.20:
+            return 0.0
+        if cuota < 1.30:
+            return 10.0
+        if cuota < 1.45:
+            return 35.0
+        if cuota < 1.55:
+            return 55.0
+        if cuota <= 3.20:
+            centro = 2.20
+            distancia = abs(cuota - centro)
+            return round(max(72.0, 100.0 - distancia * 24.0), 2)
+        if cuota <= 4.20:
+            return round(max(35.0, 72.0 - (cuota - 3.20) * 22.0), 2)
+        return 18.0
+
     def score_rentabilidad(prob, cuota, edge_pct, ev_pct):
-        cuota_score = max(0.0, min(100.0, ((min(float(cuota or 1.12), 4.50) - 1.10) / 3.40) * 100.0))
+        cuota_score_val = cuota_score(cuota)
         edge_norm = max(0.0, min(100.0, 50.0 + float(edge_pct or 0.0) * 3.0))
         ev_norm = max(0.0, min(100.0, 50.0 + float(ev_pct or 0.0) * 2.2))
         return round(
             float(prob or 0.0) * 0.30
-            + cuota_score * 0.20
+            + cuota_score_val * 0.20
             + edge_norm * 0.25
             + ev_norm * 0.25,
             2,
         )
 
-    def final_rank_score(score_pick_val, score_rentabilidad_val):
-        return round(float(score_rentabilidad_val or 0.0) * 0.60 + float(score_pick_val or 0.0) * 0.40, 2)
+    def score_final(prob, cuota, edge_pct, ev_pct, coherencia):
+        return round(
+            float(ev_pct or 0.0) * 0.40
+            + float(edge_pct or 0.0) * 0.25
+            + float(prob or 0.0) * 0.15
+            + float(coherencia or 0.0) * 0.10
+            + float(cuota_score(cuota) or 0.0) * 0.10,
+            2,
+        )
 
     def probabilidad_compuesta(prob, valor, score, sesgo_lado=None, categoria=None):
         base = prob
@@ -1787,25 +1814,47 @@ def asesor_apuesta(row_dict):
         pick_score = score_pick(prob, edge_pct, coherencia, seguridad)
 
         if categoria == "dc":
-            pick_score -= 4.5
+            pick_score -= 6.0
         if mercado in {"Under 4.5", "Over 1.5"}:
-            pick_score -= 5.5
+            pick_score -= 7.5
         if mercado == "Under 3.5":
-            pick_score -= 1.5
+            pick_score -= 3.0
         if mercado == "Doble oportunidad" and jerarquia_lado == sesgo_lado and prob < 65:
             pick_score -= 8.0
         if mercado == "Doble oportunidad":
-            score_rentabilidad_val -= 6.0
+            score_rentabilidad_val -= 8.0
         if mercado in {"Under 4.5", "Over 1.5"}:
-            score_rentabilidad_val -= 6.5
+            score_rentabilidad_val -= 8.0
         if mercado == "Under 3.5":
-            score_rentabilidad_val -= 2.0
+            score_rentabilidad_val -= 3.0
+        if cuota < 1.30:
+            score_rentabilidad_val -= 10.0
+        elif cuota < 1.45:
+            score_rentabilidad_val -= 4.0
         if categoria == "win" and cuota and cuota >= 1.85 and prob >= 54:
-            score_rentabilidad_val += 6.0
+            score_rentabilidad_val += 8.0
         if categoria == "draw" and cuota and cuota >= 2.80 and prob >= 30:
-            score_rentabilidad_val += 4.0
+            score_rentabilidad_val += 5.0
         if jerarquia_lado == sesgo_lado and categoria in {"win", "score"}:
             score_rentabilidad_val += 2.5
+
+        final_score_val = score_final(prob, cuota, edge_pct, ev_pct, coherencia)
+        if mercado == "Doble oportunidad":
+            final_score_val -= 3.5
+        if mercado in {"Under 4.5", "Over 1.5"}:
+            final_score_val -= 5.0
+        if mercado == "Under 3.5":
+            final_score_val -= 1.5
+        if cuota < 1.30:
+            final_score_val -= 8.0
+        elif cuota < 1.45:
+            final_score_val -= 3.0
+        if categoria == "win" and cuota and cuota >= 1.85 and prob >= 54:
+            final_score_val += 3.5
+        if categoria == "draw" and cuota and cuota >= 2.80 and prob >= 30:
+            final_score_val += 2.5
+        if jerarquia_lado == sesgo_lado and categoria in {"win", "score"}:
+            final_score_val += 1.5
 
         candidatos.append(
             {
@@ -1823,9 +1872,10 @@ def asesor_apuesta(row_dict):
                 "ev_pct": ev_pct,
                 "coherencia_futbolistica": coherencia,
                 "seguridad_mercado": seguridad,
+                "cuota_score": cuota_score(cuota),
                 "score_rentabilidad": round(score_rentabilidad_val, 2),
                 "score_pick": round(pick_score, 2),
-                "final_rank_score": final_rank_score(pick_score, score_rentabilidad_val),
+                "score_final": round(final_score_val, 2),
             }
         )
 
@@ -1948,7 +1998,24 @@ def asesor_apuesta(row_dict):
                 cand["score_rentabilidad"] = round(float(cand["score_rentabilidad"]) - 6.5, 2)
             if cand.get("mercado") == "Under 3.5":
                 cand["score_rentabilidad"] = round(float(cand["score_rentabilidad"]) - 2.0, 2)
-            cand["final_rank_score"] = final_rank_score(cand.get("score_pick"), cand.get("score_rentabilidad"))
+            cand["cuota_score"] = cuota_score(cand.get("cuota"))
+            cand["score_final"] = score_final(
+                cand.get("prob"),
+                cand.get("cuota"),
+                cand.get("edge_pct"),
+                cand.get("ev_pct"),
+                cand.get("coherencia_futbolistica"),
+            )
+            if cand.get("mercado") == "Doble oportunidad":
+                cand["score_final"] = round(float(cand["score_final"]) - 3.5, 2)
+            if cand.get("mercado") in {"Under 4.5", "Over 1.5"}:
+                cand["score_final"] = round(float(cand["score_final"]) - 5.0, 2)
+            if cand.get("mercado") == "Under 3.5":
+                cand["score_final"] = round(float(cand["score_final"]) - 1.5, 2)
+            if float(cand.get("cuota") or 0.0) < 1.30:
+                cand["score_final"] = round(float(cand["score_final"]) - 8.0, 2)
+            elif float(cand.get("cuota") or 0.0) < 1.45:
+                cand["score_final"] = round(float(cand["score_final"]) - 3.0, 2)
 
         return candidatos
 
@@ -1972,60 +2039,89 @@ def asesor_apuesta(row_dict):
 
     candidatos = aplicar_coherencia(candidatos)
     candidatos = [c for c in candidatos if c["score"] >= config["min_pick"]]
+    candidatos_filtrados = []
+    for cand in candidatos:
+        prob = float(cand.get("prob") or 0.0)
+        cuota = float(cand.get("cuota") or 0.0)
+        edge = float(cand.get("edge_pct") or 0.0)
+        ev = float(cand.get("ev_pct") or 0.0)
+        riesgo = str(cand.get("riesgo", "") or "")
+        if prob < 50:
+            continue
+        if cuota < 1.20:
+            continue
+        if edge <= 0 or ev <= 0:
+            continue
+        if riesgo == "Riesgo alto" and not (ev >= 10 and cuota >= 1.60):
+            continue
+        candidatos_filtrados.append(cand)
+    candidatos = candidatos_filtrados
     if not candidatos:
         return {
-            "pick_recomendado": prediccion,
-            "mercado_recomendado": "Sin mercado claro",
-            "probabilidad_pick": round(prob_top, 1),
-            "confianza_pick": "Baja",
-            "claves_pick": "señales mezcladas",
-            "accion_pick": "Evitar",
+            "pick_recomendado": "No hay picks con valor real",
+            "mercado_recomendado": "Sin valor real",
+            "probabilidad_pick": None,
+            "confianza_pick": "Evitar",
+            "claves_pick": "ningún mercado supera los filtros mínimos de valor, edge y riesgo",
+            "accion_pick": "No tocar",
             "riesgo_pick": "Riesgo alto",
             "valor_pick": 0.0,
             "cuota_pick": None,
             "edge_pick": 0.0,
             "ev_pick": 0.0,
             "score_pick": 0.0,
-            "justificacion_ranking": "",
+            "justificacion_ranking": "No hay picks con valor real",
             "top_picks": [],
         }
 
     candidatos = sorted(
         candidatos,
         key=lambda x: (
-            x.get("final_rank_score", 0.0),
+            x.get("score_final", 0.0),
             x.get("score_rentabilidad", 0.0),
-            x.get("score_pick", 0.0),
+            x.get("ev_pct", 0.0),
+            x.get("edge_pct", 0.0),
             x.get("prob", 0.0),
             x.get("score", 0.0),
         ),
         reverse=True,
     )
+    if len(candidatos) >= 2 and float(candidatos[0].get("cuota") or 0.0) < 1.25:
+        alternativas = [c for c in candidatos[1:] if float(c.get("ev_pct") or 0.0) > 0 and float(c.get("cuota") or 0.0) >= 1.25]
+        if alternativas:
+            mejor_alt = alternativas[0]
+            idx_alt = candidatos.index(mejor_alt)
+            candidatos[0], candidatos[idx_alt] = candidatos[idx_alt], candidatos[0]
     for cand in candidatos:
         cand["confianza"] = confianza_desde_prob(cand["prob"])
         cand["riesgo"] = riesgo_desde_prob(cand["prob"], cand.get("coherencia_futbolistica", 50))
     mejor = candidatos[0]
-    if mejor["prob"] >= 70 and confianza_desde_prob(mejor["prob"]) in {"Muy alta", "Alta", "Media-alta"} and mejor["riesgo"] != "Riesgo alto" and mejor["coherencia_futbolistica"] >= 58:
+    if (
+        mejor["prob"] >= 70
+        and confianza_desde_prob(mejor["prob"]) in {"Muy alta", "Alta", "Media-alta"}
+        and mejor["riesgo"] != "Riesgo alto"
+        and mejor["coherencia_futbolistica"] >= 58
+        and float(mejor.get("ev_pct") or 0.0) > 0
+        and float(mejor.get("edge_pct") or 0.0) > 0
+    ):
         accion = "Apostar"
     elif mejor["prob"] >= 60 or mejor["riesgo"] != "Riesgo bajo" or consenso_score < 0.75:
         accion = "Mirar"
     else:
-        accion = "Evitar"
+        accion = "No tocar"
     confianza = confianza_desde_prob(mejor["prob"])
 
     if jerarquia_lado and mejor["mercado"] == "Doble oportunidad" and jerarquia_lado in {"local", "visitante"} and mejor["prob"] < 65:
-        accion = "Mirar" if mejor["prob"] >= 60 else "Evitar"
+        accion = "Mirar" if mejor["prob"] >= 60 else "No tocar"
 
     justificacion_ranking = ""
     if len(candidatos) >= 2:
         candidato_mas_probable = max(candidatos, key=lambda x: x.get("prob", 0.0))
-        if candidato_mas_probable["pick"] != mejor["pick"] or candidato_mas_probable["mercado"] != mejor["mercado"]:
-            if mejor.get("score_rentabilidad", 0.0) > candidato_mas_probable.get("score_rentabilidad", 0.0):
-                justificacion_ranking = "va primero por mejor valor esperado y rentabilidad potencial frente a una opción más segura"
-            elif mejor.get("coherencia_futbolistica", 0.0) > candidato_mas_probable.get("coherencia_futbolistica", 0.0):
-                justificacion_ranking = "va primero por mejor coherencia futbolística frente a un mercado de mayor probabilidad"
-            else:
-                justificacion_ranking = "va primero por mejor score final entre probabilidad, valor esperado y seguridad de mercado"
+        candidato_mayor_ev = max(candidatos, key=lambda x: x.get("ev_pct", 0.0))
+        if candidato_mayor_ev["pick"] == mejor["pick"] and candidato_mayor_ev["mercado"] == mejor["mercado"]:
+            justificacion_ranking = "va primero por mayor valor esperado ajustado entre los mercados viables"
+        elif candidato_mas_probable["pick"] != mejor["pick"] or candidato_mas_probable["mercado"] != mejor["mercado"]:
+            justificacion_ranking = "no es el de mayor probabilidad, pero ofrece mejor equilibrio entre cuota, edge, EV y riesgo"
 
     return {
         "pick_recomendado": mejor["pick"],
@@ -2040,6 +2136,7 @@ def asesor_apuesta(row_dict):
         "edge_pick": mejor.get("edge_pct"),
         "ev_pick": mejor.get("ev_pct"),
         "score_pick": mejor.get("score_pick"),
+        "score_final": mejor.get("score_final", 0.0),
         "justificacion_ranking": justificacion_ranking,
         "top_picks": candidatos[:3],
     }
@@ -2517,6 +2614,7 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         row_result["edge_pick"] = asesor.get("edge_pick", 0.0)
         row_result["ev_pick"] = asesor.get("ev_pick", 0.0)
         row_result["score_pick"] = asesor.get("score_pick", 0.0)
+        row_result["score_final"] = asesor.get("score_final", 0.0)
         row_result["justificacion_ranking"] = asesor.get("justificacion_ranking", "")
         top_picks = asesor.get("top_picks", []) or []
         for idx in range(3):

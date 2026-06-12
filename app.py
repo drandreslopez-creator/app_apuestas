@@ -13,7 +13,7 @@ from api_data import get_matches_api, get_last_api_status
 from openai_analysis import analizar_partidos_con_openai, openai_analisis_disponible
 
 VENTANA_PARTIDOS = "hoy y próximos 2 días"
-DECISION_ORDEN = {"Apostar": 0, "Mirar": 1, "Evitar": 2}
+DECISION_ORDEN = {"Apostar": 0, "Mirar": 1, "No tocar": 2, "Evitar": 2}
 LIVE_REFRESH_INTERVAL = "45s"
 AUTO_HISTORY_SYNC_MINUTES = 20
 COLOR_TEXT_MAIN = "var(--text-color)"
@@ -71,6 +71,7 @@ def badge_decision(decision):
         "Apostar": ("#133a1b", "#8ef0a7"),
         "Mirar": ("#3a3213", "#f3d97a"),
         "Evitar": ("#3a1616", "#ff9898"),
+        "No tocar": ("#3a1616", "#ff9898"),
     }
     bg, fg = colores.get(decision, ("#1c2430", "#d7e3f4"))
     return f"<span style='background:{bg};color:{fg};padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;'>{decision}</span>"
@@ -113,6 +114,7 @@ def preparar_resultados_ui(df):
         "edge_pick": 0.0,
         "ev_pick": 0.0,
         "score_pick": 0.0,
+        "score_final": 0.0,
         "justificacion_ranking": "",
         "cuota_1": None,
         "edge_1": 0.0,
