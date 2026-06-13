@@ -99,6 +99,8 @@ def preparar_resultados_ui(df):
         "hora_partido": "",
         "estado_partido": "NS",
         "prediccion_simple": "Partido para mirar",
+        "prediccion_partido": "Partido para mirar",
+        "conclusion_prediccion": "",
         "decision_simple": "Mirar",
         "disciplina_simple": "Solo seguimiento",
         "riesgo_simple": "Riesgo medio",
@@ -119,6 +121,7 @@ def preparar_resultados_ui(df):
         "mercado_observado": "",
         "pick_observado": "",
         "motivo_descarte": "",
+        "conclusion_apuesta": "",
         "cuota_1": None,
         "edge_1": 0.0,
         "ev_1": 0.0,
@@ -263,7 +266,7 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
     hora_top = row.get("hora_partido", "")
     estado_top = row.get("estado_partido", "NS")
     decision_top = row.get("decision_simple", "Mirar")
-    pred_top = row.get("prediccion_simple", "Partido para mirar")
+    pred_top = row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
     pick_top = row.get("pick_recomendado") or pred_top
     mercado_top = row.get("mercado_recomendado") or "1X2"
     disciplina_top = row.get("disciplina_simple", "Solo seguimiento")
@@ -322,6 +325,7 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
             "<div style='min-width:120px;display:flex;flex-direction:column;align-items:center;"
             "justify-content:center;text-align:center;'>"
             f"{badge_decision(decision_top)}"
+            f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};font-weight:700;text-align:center;margin-top:4px;'>Predicción: {pred_top}</div>"
             f"<div style='font-size:11px;color:{COLOR_TEXT_MAIN};font-weight:700;text-align:center;margin-top:4px;'>{pick_top}</div>"
             f"<div style='font-size:10px;color:{COLOR_TEXT_MUTED};font-weight:700;text-align:center;margin-top:2px;'>{mercado_top}</div>"
             + (
@@ -386,8 +390,14 @@ def render_partido(row):
     decision_ia = str(row.get("decision_ia", "") or "").strip()
     mercado_ia = str(row.get("mercado_ia", "") or "").strip()
     claves_ia = str(row.get("claves_ia", "") or "").strip()
-    pick_recomendado = row.get("pick_recomendado") or row.get("prediccion_simple", "Partido para mirar")
+    prediccion_partido = row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
+    conclusion_prediccion = str(row.get("conclusion_prediccion", "") or "").strip()
+    prob_local_1x2 = row.get("prob_local")
+    prob_empate_1x2 = row.get("prob_empate")
+    prob_visitante_1x2 = row.get("prob_visitante")
+    pick_recomendado = row.get("pick_recomendado") or prediccion_partido
     mercado_recomendado = row.get("mercado_recomendado") or "1X2"
+    conclusion_apuesta = str(row.get("conclusion_apuesta", "") or "").strip()
     probabilidad_pick = row.get("probabilidad_pick")
     confianza_pick = row.get("confianza_pick", "")
     claves_pick = row.get("claves_pick", "")
@@ -453,8 +463,12 @@ def render_partido(row):
         st.markdown(
             f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};'>"
             f"{row.get('hora_partido', '')} | {badge_estado(row.get('estado_partido', 'NS'))} | "
-            f"Pick: <b>{pick_recomendado}</b> · Mercado: <b>{mercado_recomendado}</b>"
+            f"Predicción: <b>{prediccion_partido}</b> · Apuesta: <b>{pick_recomendado}</b>"
             f"</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'><b>1X2:</b> Local {_fmt_pct(prob_local_1x2)} · Empate {_fmt_pct(prob_empate_1x2)} · Visitante {_fmt_pct(prob_visitante_1x2)}</div>",
             unsafe_allow_html=True,
         )
         if consenso:
@@ -469,7 +483,23 @@ def render_partido(row):
     with top2:
         st.markdown(badge_decision(row.get("decision_simple", "Mirar")), unsafe_allow_html=True)
         st.markdown(
-            f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:8px;'><b>{pick_recomendado}</b></div>",
+            f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};margin-top:8px;'><b>Predicción del partido</b></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:3px;'><b>{prediccion_partido}</b></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Local <b>{_fmt_pct(prob_local_1x2)}</b> · Empate <b>{_fmt_pct(prob_empate_1x2)}</b> · Visitante <b>{_fmt_pct(prob_visitante_1x2)}</b></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};margin-top:8px;'><b>Recomendación de apuesta</b></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:3px;'><b>{pick_recomendado}</b></div>",
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -515,18 +545,23 @@ def render_partido(row):
                 f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Por qué este pick va primero:</b> {justificacion_ranking} · <b>Score final:</b> {score_final}</div>",
                 unsafe_allow_html=True,
             )
+        if conclusion_prediccion:
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-bottom:6px;'><b>Qué creo que va a pasar:</b> {conclusion_prediccion}</div>",
+                unsafe_allow_html=True,
+            )
         if not sin_valor_real:
             st.markdown(
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};'><b>Lectura rápida:</b> {row.get('contexto_simple', 'Sin contexto adicional')}</div>",
                 unsafe_allow_html=True,
             )
             st.markdown(
-                f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Conclusión:</b> {row.get('razon_simple', '')}</div>",
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Cómo conviene apostarlo:</b> {conclusion_apuesta or row.get('razon_simple', '')}</div>",
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Razón:</b> {motivo_descarte or 'Ningún mercado supera los filtros mínimos de probabilidad, cuota, edge, EV y riesgo.'}</div>",
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-top:6px;'><b>Cómo conviene apostarlo:</b> {conclusion_apuesta or motivo_descarte or 'Ningún mercado supera los filtros mínimos de probabilidad, cuota, edge, EV y riesgo.'}</div>",
                 unsafe_allow_html=True,
             )
         if claves_pick and not sin_valor_real:

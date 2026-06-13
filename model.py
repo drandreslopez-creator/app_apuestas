@@ -1194,6 +1194,86 @@ def prediccion_simple(ganador):
     return mapping.get(ganador, "Partido para mirar")
 
 
+def lectura_prediccion_partido(row_dict):
+    prob_local = float(row_dict.get("prob_local", 0) or 0)
+    prob_empate = float(row_dict.get("prob_empate", 0) or 0)
+    prob_visitante = float(row_dict.get("prob_visitante", 0) or 0)
+    contexto = _contexto_competitivo(row_dict)
+    jerarquia_lado = contexto.get("jerarquia_lado")
+    jerarquia_diff = abs(float(contexto.get("jerarquia_diff", 0) or 0))
+
+    opciones = [
+        ("local", prob_local, "Gana el local"),
+        ("empate", prob_empate, "Empate"),
+        ("visitante", prob_visitante, "Gana el visitante"),
+    ]
+    opciones_ordenadas = sorted(opciones, key=lambda x: x[1], reverse=True)
+    lado_top, prob_top, etiqueta_top = opciones_ordenadas[0]
+    lado_segundo, prob_segundo, _ = opciones_ordenadas[1]
+    diff = round(prob_top - prob_segundo, 1)
+
+    if lado_top == "empate":
+        return "Empate probable"
+
+    if jerarquia_lado in {"local", "visitante"} and jerarquia_diff >= 8 and lado_top != jerarquia_lado:
+        if jerarquia_lado == "visitante" and prob_local < 50 and prob_visitante >= 27 and diff <= 18:
+            return "Visitante con mayor jerarquía, pero sin ventaja suficiente para 1X2"
+        if jerarquia_lado == "local" and prob_visitante < 50 and prob_local >= 27 and diff <= 18:
+            return "Local con mayor jerarquía, pero sin ventaja suficiente para 1X2"
+
+    if diff < 7:
+        return "Partido muy parejo"
+    if diff < 15:
+        return "Leve ventaja local" if lado_top == "local" else "Leve ventaja visitante"
+    return "Creo que gana el local" if lado_top == "local" else "Creo que gana el visitante"
+
+
+def conclusion_prediccion_partido(row_dict):
+    lectura = lectura_prediccion_partido(row_dict)
+    prob_local = float(row_dict.get("prob_local", 0) or 0)
+    prob_empate = float(row_dict.get("prob_empate", 0) or 0)
+    prob_visitante = float(row_dict.get("prob_visitante", 0) or 0)
+
+    if lectura == "Partido muy parejo":
+        return f"Partido muy parejo: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    if lectura == "Empate probable":
+        return f"Empate probable: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    if lectura == "Leve ventaja local":
+        return f"Leve ventaja local: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    if lectura == "Leve ventaja visitante":
+        return f"Leve ventaja visitante: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    if lectura == "Visitante con mayor jerarquía, pero sin ventaja suficiente para 1X2":
+        return f"Visitante con mayor jerarquía, pero sin ventaja suficiente para 1X2: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    if lectura == "Local con mayor jerarquía, pero sin ventaja suficiente para 1X2":
+        return f"Local con mayor jerarquía, pero sin ventaja suficiente para 1X2: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    if lectura == "Creo que gana el local":
+        return f"Creo que gana el local: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    if lectura == "Creo que gana el visitante":
+        return f"Creo que gana el visitante: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+    return f"Lectura 1X2: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
+
+
+def conclusion_recomendacion_apuesta(row_dict):
+    pred = str(row_dict.get("prediccion_simple", "") or "").strip()
+    pick = str(row_dict.get("pick_recomendado", "") or "").strip()
+    mercado = str(row_dict.get("mercado_recomendado", "") or "").strip()
+    decision = str(row_dict.get("decision_simple", "") or "").strip()
+
+    if pick.lower() == "no hay picks con valor real" or decision == "No tocar":
+        if pred and pred != "Partido para mirar":
+            return f"Aunque la lectura futbolística apunta a {pred.lower()}, no hay valor real para apostar."
+        return "No hay valor real para apostar en este partido."
+
+    if pred in {"Gana el local", "Gana el visitante", "Empate"} and pick and mercado:
+        if pick == pred and mercado == "1X2":
+            return f"La mejor apuesta coincide con la lectura del partido: {pick.lower()}."
+        return f"Aunque creo que {pred.lower()}, el mercado más rentable es {pick.lower()}."
+
+    if pick and mercado:
+        return f"El mercado más rentable detectado es {pick.lower()}."
+    return "No hay una recomendación de apuesta suficientemente clara."
+
+
 def contexto_simple(row_dict):
     frases = []
     contexto = _contexto_competitivo(row_dict)
@@ -2627,6 +2707,8 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         row_result["ai_resumen"] = resumir_ai_decision(row_result)
         pred_base, _ = _prediccion_base(row_result)
         row_result["prediccion_simple"] = pred_base if row_result["ganador"] == "No bet" else prediccion_simple(row_result["ganador"])
+        row_result["prediccion_partido"] = lectura_prediccion_partido(row_result)
+        row_result["conclusion_prediccion"] = conclusion_prediccion_partido(row_result)
         row_result["decision_simple"] = decision_simple(row_result)
         row_result["disciplina_simple"] = disciplina_simple(row_result)
         row_result["riesgo_simple"] = riesgo_simple(row_result)
@@ -2649,6 +2731,7 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         row_result["mercado_observado"] = asesor.get("mercado_observado", "")
         row_result["pick_observado"] = asesor.get("pick_observado", "")
         row_result["motivo_descarte"] = asesor.get("motivo_descarte", "")
+        row_result["conclusion_apuesta"] = conclusion_recomendacion_apuesta(row_result)
         top_picks = asesor.get("top_picks", []) or []
         for idx in range(3):
             top = top_picks[idx] if idx < len(top_picks) else {}
