@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 from datetime import datetime, timedelta
 
 from tracker import (
@@ -109,6 +110,9 @@ def preparar_resultados_ui(df):
         "tpi_local": None,
         "tpi_visitante": None,
         "tpi_diff": 0.0,
+        "tpi_confidence_local": "desconocida",
+        "tpi_confidence_visitante": "desconocida",
+        "tpi_confidence_general": "desconocida",
         "ajuste_jerarquia": "",
         "ajuste_tpi": "",
         "motivo_ajuste_1x2": "",
@@ -131,6 +135,9 @@ def preparar_resultados_ui(df):
         "cuota_pick": None,
         "edge_pick": 0.0,
         "ev_pick": 0.0,
+        "odds_source": "estimated",
+        "odds_source_pick": "estimated",
+        "alerta_cuota": "",
         "score_pick": 0.0,
         "score_final": 0.0,
         "justificacion_ranking": "",
@@ -432,6 +439,9 @@ def render_partido(row):
     tpi_local = row.get("tpi_local")
     tpi_visitante = row.get("tpi_visitante")
     tpi_diff = row.get("tpi_diff")
+    tpi_confidence_local = str(row.get("tpi_confidence_local", "desconocida") or "desconocida")
+    tpi_confidence_visitante = str(row.get("tpi_confidence_visitante", "desconocida") or "desconocida")
+    tpi_confidence_general = str(row.get("tpi_confidence_general", "desconocida") or "desconocida")
     ajuste_jerarquia = str(row.get("ajuste_jerarquia", "") or "").strip()
     auditoria_ajuste_aplicado = str(row.get("auditoria_ajuste_aplicado", "") or "").strip()
     auditoria_motivo = str(row.get("auditoria_motivo", "") or "").strip()
@@ -448,6 +458,8 @@ def render_partido(row):
     cuota_pick = row.get("cuota_pick")
     edge_pick = row.get("edge_pick", 0.0)
     ev_pick = row.get("ev_pick", 0.0)
+    odds_source_pick = str(row.get("odds_source_pick", "estimated") or "estimated").strip()
+    alerta_cuota = str(row.get("alerta_cuota", "") or "").strip()
     score_final = row.get("score_final", 0.0)
     justificacion_ranking = str(row.get("justificacion_ranking", "") or "").strip()
     mercado_observado = str(row.get("mercado_observado", "") or "").strip()
@@ -472,6 +484,7 @@ def render_partido(row):
                     "edge": row.get(f"edge_{idx}", 0.0),
                     "ev": row.get(f"ev_{idx}", 0.0),
                     "score_final": row.get(f"score_final_{idx}", 0.0),
+                    "odds_source": row.get(f"odds_source_{idx}", row.get("odds_source_pick", "estimated")),
                 }
             )
 
@@ -556,9 +569,18 @@ def render_partido(row):
         )
         st.markdown(
             f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Prob. estimada: <b>{_fmt_pct(probabilidad_pick)}</b> · Confianza: <b>{confianza_pick or 'Evitar'}</b></div>"
-            f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'>Cuota: <b>{_fmt_num(cuota_pick)}</b> · Edge: <b>{_fmt_pct(edge_pick if not sin_valor_real else None)}</b> · EV: <b>{_fmt_pct(ev_pick if not sin_valor_real else None)}</b></div>",
+            + (
+                f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'>Cuota: <b>{_fmt_num(cuota_pick)}</b> · Edge: <b>{_fmt_pct(edge_pick if not sin_valor_real else None)}</b> · EV: <b>{_fmt_pct(ev_pick if not sin_valor_real else None)}</b></div>"
+                if odds_source_pick == "real" else
+                f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'>Cuota justa estimada: <b>{_fmt_num(cuota_pick)}</b> · Edge: <b>No validable</b> · EV: <b>No validable</b></div>"
+            ),
             unsafe_allow_html=True,
         )
+        if alerta_cuota and not sin_valor_real:
+            st.markdown(
+                f"<div style='font-size:11px;color:#ffb4a2;margin-top:4px;'><b>{alerta_cuota}</b></div>",
+                unsafe_allow_html=True,
+            )
 
     with top3:
         if top_picks and not sin_valor_real:
@@ -566,7 +588,12 @@ def render_partido(row):
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-bottom:4px;'><b>{item['label']}:</b> {item['pick']} · {item['mercado']} · <b>{item['prob']}%</b>"
                 + (f" · {item['confianza']}" if item["confianza"] else "")
                 + (f" · {item['riesgo']}" if item["riesgo"] else "")
-                + (f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:2px;'>Cuota {item['cuota']} · Edge {item['edge']}% · EV {item['ev']}% · Score {item['score_final']}</div>" if item["cuota"] not in ("", None) else "")
+                + (
+                    f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:2px;'>Cuota {item['cuota']} · Edge {item['edge']}% · EV {item['ev']}% · Score {item['score_final']}</div>"
+                    if item["cuota"] not in ("", None) and item.get("odds_source") == "real" else
+                    f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:2px;'>Cuota justa {item['cuota']} · Edge no validable · EV no validable · Score {item['score_final']}</div>"
+                    if item["cuota"] not in ("", None) else ""
+                )
                 + "</div>"
                 for item in top_picks
             )
@@ -606,7 +633,7 @@ def render_partido(row):
                 f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>1X2 base:</b> Local {_fmt_pct(prob_local_base)} · Empate {_fmt_pct(prob_empate_base)} · Visitante {_fmt_pct(prob_visitante_base)}</div>"
                 f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>1X2 ajustado:</b> Local {_fmt_pct(prob_local_1x2)} · Empate {_fmt_pct(prob_empate_1x2)} · Visitante {_fmt_pct(prob_visitante_1x2)}</div>"
                 + (
-                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>TPI:</b> Local {_fmt_num(tpi_local)} · Visitante {_fmt_num(tpi_visitante)} · Dif. {_fmt_num(tpi_diff)}</div>"
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>TPI:</b> Local {_fmt_num(tpi_local)} ({tpi_confidence_local}) · Visitante {_fmt_num(tpi_visitante)} ({tpi_confidence_visitante}) · Dif. {_fmt_num(tpi_diff)}</div>"
                     if not _is_missing(tpi_local) and not _is_missing(tpi_visitante) else
                     ""
                 )
@@ -617,6 +644,11 @@ def render_partido(row):
                 ),
                 unsafe_allow_html=True,
             )
+            if tpi_confidence_general in {"baja", "desconocida"}:
+                st.markdown(
+                    "<div style='font-size:12px;color:#ffb4a2;margin-bottom:6px;'><b>Predicción limitada por datos incompletos de fuerza relativa.</b></div>",
+                    unsafe_allow_html=True,
+                )
             if auditoria_ajuste_aplicado:
                 st.markdown(
                     f"<div style='font-size:12px;color:#ff9f7a;margin-bottom:6px;'><b>{auditoria_ajuste_aplicado}</b></div>"
@@ -745,7 +777,17 @@ def render_dashboard():
     _, total = calcular_roi()
     en_vivo = int(resultados["estado_partido"].isin(["LIVE", "HT", "1H", "2H"]).sum()) if "estado_partido" in resultados.columns else 0
     proximos = int(len(resultados) - en_vivo)
-    picks_claros = int((resultados["decision_simple"] == "Apostar").sum()) if "decision_simple" in resultados.columns else 0
+    picks_claros = 0
+    if "decision_simple" in resultados.columns:
+        picks_claros = int(
+            (
+                resultados["decision_simple"].eq("Apostar")
+                & resultados.get("odds_source_pick", "estimated").eq("real")
+                & pd.to_numeric(resultados.get("edge_pick", 0), errors="coerce").fillna(0).gt(0)
+                & pd.to_numeric(resultados.get("ev_pick", 0), errors="coerce").fillna(0).gt(0)
+                & resultados.get("riesgo_simple", "").ne("Riesgo alto")
+            ).sum()
+        )
 
     m1, m2, m3 = st.columns(3)
     with m1:

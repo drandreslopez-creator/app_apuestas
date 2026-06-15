@@ -296,6 +296,89 @@ def _team_strength_hint(name):
     return None
 
 
+def _confidence_rank_tpi(label):
+    order = {"desconocida": 0, "baja": 1, "media": 2, "alta": 3}
+    return order.get(str(label or "").strip().lower(), 0)
+
+
+def _team_power_profile(row_dict, side):
+    local_side = side == "local"
+    team_name = row_dict.get("local") if local_side else row_dict.get("visitante")
+    rival_name = row_dict.get("visitante") if local_side else row_dict.get("local")
+
+    fuerza_hint = _team_strength_hint(team_name)
+    fuerza_rival_hint = _team_strength_hint(rival_name)
+
+    ppm_raw = row_dict.get("ppm_local_casa", row_dict.get("ppm_local")) if local_side else row_dict.get("ppm_visitante_fuera", row_dict.get("ppm_visitante"))
+    forma_raw = row_dict.get("forma_local") if local_side else row_dict.get("forma_visitante")
+    goles_raw = row_dict.get("goles_local") if local_side else row_dict.get("goles_visitante")
+    goles_rival_raw = row_dict.get("goles_visitante") if local_side else row_dict.get("goles_local")
+
+    ppm = _normalizar_ppm(ppm_raw)
+    forma = _normalizar_forma_score(forma_raw)
+    goles = _normalizar_goles(goles_raw)
+    goles_rival = _normalizar_goles(goles_rival_raw)
+    goal_diff_score = max(0.0, min(0.5 + (goles - goles_rival) * 0.35, 1.0))
+    prioridad_liga = max(0.0, min(float(row_dict.get("prioridad_liga", 0) or 0) / 100.0, 1.0))
+    localia = 1.0 if local_side and row_dict.get("localia", 1) else 0.0
+
+    stats_count = 0
+    for raw in [ppm_raw, forma_raw, goles_raw, goles_rival_raw]:
+        try:
+            if raw is not None and float(raw) > 0:
+                stats_count += 1
+        except Exception:
+            continue
+
+    if fuerza_hint is not None:
+        fuerza = float(fuerza_hint)
+        confidence = "alta"
+        source = "tabla_manual"
+    elif stats_count >= 3 and prioridad_liga >= 0.7:
+        fuerza = 58.0 + (ppm * 12.0) + (forma * 10.0) + ((goal_diff_score - 0.5) * 12.0)
+        confidence = "baja" if _es_partido_selecciones(row_dict) else "media"
+        source = "datos_parciales"
+    elif stats_count >= 2:
+        fuerza = 55.0 + (ppm * 10.0) + (forma * 8.0) + ((goal_diff_score - 0.5) * 8.0)
+        confidence = "baja"
+        source = "estimacion"
+    else:
+        fuerza = 60.0
+        confidence = "desconocida"
+        source = "fallback"
+
+    fuerza = max(35.0, min(fuerza, 96.0))
+    fuerza_norm = max(0.0, min(fuerza / 100.0, 1.0))
+    rival_norm = max(0.0, min(float(fuerza_rival_hint or 60.0) / 100.0, 1.0))
+    quality_rivals = max(0.0, min((0.55 + (rival_norm - 0.60) * 0.65), 1.0))
+
+    if _es_partido_selecciones(row_dict):
+        score = (
+            fuerza_norm * 0.40
+            + fuerza_norm * 0.20
+            + ((ppm + forma) / 2.0) * 0.15
+            + goal_diff_score * 0.10
+            + quality_rivals * 0.10
+            + localia * 0.05
+        ) * 100.0
+    else:
+        score = (
+            fuerza_norm * 0.28
+            + prioridad_liga * 0.14
+            + ppm * 0.18
+            + forma * 0.15
+            + goal_diff_score * 0.15
+            + localia * 0.10
+        ) * 100.0
+
+    return {
+        "score": round(score, 2),
+        "confidence": confidence,
+        "source": source,
+        "stats_count": stats_count,
+    }
+
+
 def _jerarquia_futbolistica(local, visitante):
     fuerza_local = _team_strength_hint(local)
     fuerza_visitante = _team_strength_hint(visitante)
@@ -353,45 +436,7 @@ def _normalizar_goles(goles):
 
 
 def team_power_index(row_dict, side):
-    local_side = side == "local"
-    team_name = row_dict.get("local") if local_side else row_dict.get("visitante")
-    rival_name = row_dict.get("visitante") if local_side else row_dict.get("local")
-    fuerza = float(_team_strength_hint(team_name) or 60.0)
-    fuerza_rival = float(_team_strength_hint(rival_name) or 60.0)
-    fuerza_norm = max(0.0, min(fuerza / 100.0, 1.0))
-    rival_norm = max(0.0, min(fuerza_rival / 100.0, 1.0))
-    quality_rivals = max(0.0, min((0.55 + (rival_norm - 0.60) * 0.65), 1.0))
-    ppm = _normalizar_ppm(
-        row_dict.get("ppm_local_casa", row_dict.get("ppm_local"))
-        if local_side else
-        row_dict.get("ppm_visitante_fuera", row_dict.get("ppm_visitante"))
-    )
-    forma = _normalizar_forma_score(row_dict.get("forma_local") if local_side else row_dict.get("forma_visitante"))
-    goles = _normalizar_goles(row_dict.get("goles_local") if local_side else row_dict.get("goles_visitante"))
-    goles_rival = _normalizar_goles(row_dict.get("goles_visitante") if local_side else row_dict.get("goles_local"))
-    goal_diff_score = max(0.0, min(0.5 + (goles - goles_rival) * 0.35, 1.0))
-    localia = 1.0 if local_side and row_dict.get("localia", 1) else 0.0
-    prioridad_liga = max(0.0, min(float(row_dict.get("prioridad_liga", 0) or 0) / 100.0, 1.0))
-
-    if _es_partido_selecciones(row_dict):
-        score = (
-            fuerza_norm * 0.40
-            + fuerza_norm * 0.20
-            + ((ppm + forma) / 2.0) * 0.15
-            + goal_diff_score * 0.10
-            + quality_rivals * 0.10
-            + localia * 0.05
-        ) * 100.0
-    else:
-        score = (
-            fuerza_norm * 0.28
-            + prioridad_liga * 0.14
-            + ppm * 0.18
-            + forma * 0.15
-            + goal_diff_score * 0.15
-            + localia * 0.10
-        ) * 100.0
-    return round(score, 2)
+    return _team_power_profile(row_dict, side)["score"]
 
 
 def team_strength_score(row_dict, side):
@@ -411,6 +456,9 @@ def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitant
             "tpi_local": None,
             "tpi_visitante": None,
             "tpi_diff": 0.0,
+            "tpi_confidence_local": "desconocida",
+            "tpi_confidence_visitante": "desconocida",
+            "tpi_confidence_general": "desconocida",
             "ajuste_jerarquia": "",
             "ajuste_tpi": "",
             "ajuste_1x2_local_pct": 0.0,
@@ -418,16 +466,25 @@ def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitant
             "motivo_ajuste_1x2": "Sin ajuste especial",
         }
 
-    tpi_local = team_power_index(row_dict, "local")
-    tpi_visitante = team_power_index(row_dict, "visitante")
+    perfil_tpi_local = _team_power_profile(row_dict, "local")
+    perfil_tpi_visitante = _team_power_profile(row_dict, "visitante")
+    tpi_local = perfil_tpi_local["score"]
+    tpi_visitante = perfil_tpi_visitante["score"]
     diff = round(tpi_local - tpi_visitante, 2)
+    confidence_local = perfil_tpi_local["confidence"]
+    confidence_visitante = perfil_tpi_visitante["confidence"]
+    confidence_general = confidence_local if _confidence_rank_tpi(confidence_local) <= _confidence_rank_tpi(confidence_visitante) else confidence_visitante
 
     eps = 1e-6
     log_local = np.log(max(base["local"], eps))
     log_empate = np.log(max(base["empate"], eps))
     log_visitante = np.log(max(base["visitante"], eps))
 
-    if abs(diff) >= 40:
+    if _confidence_rank_tpi(confidence_general) <= 1:
+        alpha = 0.18
+        draw_penalty = 0.02
+        tipo_ajuste = "ajuste limitado por baja confianza TPI"
+    elif abs(diff) >= 40:
         alpha = 1.35
         draw_penalty = 0.22
         tipo_ajuste = "ajuste muy fuerte"
@@ -454,12 +511,12 @@ def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitant
     }
 
     # La localía no puede compensar diferencias estructurales extremas.
-    if diff <= -30 and ajustado["local"] >= ajustado["visitante"]:
+    if _confidence_rank_tpi(confidence_general) >= 2 and diff <= -30 and ajustado["local"] >= ajustado["visitante"]:
         transfer = min(0.18, (ajustado["local"] - ajustado["visitante"]) / 2.0 + 0.03)
         ajustado["local"] = max(0.12, ajustado["local"] - transfer)
         ajustado["visitante"] = min(0.78, ajustado["visitante"] + transfer * 0.85)
         ajustado["empate"] = max(0.12, 1.0 - ajustado["local"] - ajustado["visitante"])
-    elif diff >= 30 and ajustado["visitante"] >= ajustado["local"]:
+    elif _confidence_rank_tpi(confidence_general) >= 2 and diff >= 30 and ajustado["visitante"] >= ajustado["local"]:
         transfer = min(0.18, (ajustado["visitante"] - ajustado["local"]) / 2.0 + 0.03)
         ajustado["visitante"] = max(0.12, ajustado["visitante"] - transfer)
         ajustado["local"] = min(0.78, ajustado["local"] + transfer * 0.85)
@@ -469,7 +526,9 @@ def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitant
     ajustado = {k: round(v / total, 6) for k, v in ajustado.items()}
 
     motivo = "Sin ajuste relevante"
-    if diff <= -20:
+    if _confidence_rank_tpi(confidence_general) <= 1:
+        motivo = "Predicción limitada por datos incompletos de fuerza relativa."
+    elif diff <= -20:
         motivo = (
             f"Visitante superior por TPI ({tipo_ajuste}): ajuste aplicado "
             f"{round((ajustado['local'] - base['local']) * 100, 1)}% al local, "
@@ -493,6 +552,9 @@ def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitant
         "tpi_local": tpi_local,
         "tpi_visitante": tpi_visitante,
         "tpi_diff": diff,
+        "tpi_confidence_local": confidence_local,
+        "tpi_confidence_visitante": confidence_visitante,
+        "tpi_confidence_general": confidence_general,
         "ajuste_jerarquia": motivo,
         "ajuste_tpi": motivo,
         "ajuste_1x2_local_pct": round((ajustado["local"] - base["local"]) * 100, 1),
@@ -508,14 +570,19 @@ def auditar_prediccion(row_dict, base_probs, adjusted_probs, meta):
     tpi_local = float(meta.get("tpi_local") or 0.0)
     tpi_visitante = float(meta.get("tpi_visitante") or 0.0)
     tpi_diff = float(meta.get("tpi_diff") or 0.0)
+    tpi_confidence_general = str(meta.get("tpi_confidence_general", "desconocida") or "desconocida")
     es_selecciones = _es_partido_selecciones(row_dict)
 
     alertas = []
     ajuste_aplicado = False
     confianza_penalizacion = 0
 
+    if _confidence_rank_tpi(tpi_confidence_general) <= 1:
+        alertas.append("predicción limitada por datos incompletos de fuerza relativa")
+        confianza_penalizacion += 8
+
     # Caso 1: equipo estructuralmente inferior favorito sobre superior.
-    if es_selecciones and tpi_diff <= -8 and local > visitante:
+    if es_selecciones and _confidence_rank_tpi(tpi_confidence_general) >= 2 and tpi_diff <= -8 and local > visitante:
         shift = min(0.12, ((local - visitante) / 2.0) + 0.03)
         local = max(0.12, local - shift)
         visitante = min(0.78, visitante + shift * 0.85)
@@ -523,7 +590,7 @@ def auditar_prediccion(row_dict, base_probs, adjusted_probs, meta):
         alertas.append("jerarquía histórica no coherente: local inferior aparecía por encima del visitante")
         confianza_penalizacion += 10
         ajuste_aplicado = True
-    elif es_selecciones and tpi_diff >= 8 and visitante > local:
+    elif es_selecciones and _confidence_rank_tpi(tpi_confidence_general) >= 2 and tpi_diff >= 8 and visitante > local:
         shift = min(0.12, ((visitante - local) / 2.0) + 0.03)
         visitante = max(0.12, visitante - shift)
         local = min(0.78, local + shift * 0.85)
@@ -533,7 +600,7 @@ def auditar_prediccion(row_dict, base_probs, adjusted_probs, meta):
         ajuste_aplicado = True
 
     # Caso 2: favoritos históricos demasiado bajos.
-    if es_selecciones and tpi_diff >= 20 and local < 0.60:
+    if es_selecciones and _confidence_rank_tpi(tpi_confidence_general) >= 2 and tpi_diff >= 20 and local < 0.60:
         uplift = min(0.14, 0.60 - local + 0.02)
         local = min(0.82, local + uplift)
         visitante = max(0.08, visitante - uplift * 0.70)
@@ -541,7 +608,7 @@ def auditar_prediccion(row_dict, base_probs, adjusted_probs, meta):
         alertas.append("favorito histórico demasiado bajo: se elevó probabilidad del local")
         confianza_penalizacion += 6
         ajuste_aplicado = True
-    elif es_selecciones and tpi_diff <= -20 and visitante < 0.60:
+    elif es_selecciones and _confidence_rank_tpi(tpi_confidence_general) >= 2 and tpi_diff <= -20 and visitante < 0.60:
         uplift = min(0.14, 0.60 - visitante + 0.02)
         visitante = min(0.82, visitante + uplift)
         local = max(0.08, local - uplift * 0.70)
@@ -551,7 +618,7 @@ def auditar_prediccion(row_dict, base_probs, adjusted_probs, meta):
         ajuste_aplicado = True
 
     # Caso 3: contradicción TPI fuerte vs salida final todavía tibia.
-    if es_selecciones and abs(tpi_diff) >= 25:
+    if es_selecciones and _confidence_rank_tpi(tpi_confidence_general) >= 2 and abs(tpi_diff) >= 25:
         if tpi_diff <= -30 and visitante < 0.40:
             uplift = min(0.10, 0.40 - visitante + 0.02)
             visitante = min(0.78, visitante + uplift)
@@ -777,6 +844,33 @@ def _calidad_mercado(row_dict):
     if fuente == "fallback":
         return "debil", -2.0
     return "debil", -1.0
+
+
+REAL_ODDS_SOURCES = {"the_odds_api", "espn_odds", "api_football_odds", "api_football_odds_live"}
+
+
+def _fair_odds(prob_pct):
+    try:
+        prob_pct = float(prob_pct or 0.0)
+    except Exception:
+        prob_pct = 0.0
+    prob_pct = max(prob_pct, 1.0)
+    return round(max(1.01, 100.0 / prob_pct), 2)
+
+
+def _tiene_cuotas_reales_1x2(row_dict):
+    fuente = str(row_dict.get("fuente_cuotas") or "").strip()
+    if fuente not in REAL_ODDS_SOURCES:
+        return False
+    try:
+        cuotas = [
+            float(row_dict.get("cuota_local", 0) or 0),
+            float(row_dict.get("cuota_empate", 0) or 0),
+            float(row_dict.get("cuota_visitante", 0) or 0),
+        ]
+    except Exception:
+        return False
+    return all(c > 1.01 for c in cuotas)
 
 
 def calcular_ai_score(row_dict):
@@ -1252,6 +1346,9 @@ def decision_simple(row_dict):
     if row_dict.get("trampa"):
         return "Evitar"
 
+    if _confidence_rank_tpi(row_dict.get("tpi_confidence_general", "desconocida")) <= 1:
+        return "No tocar"
+
     prediccion, prob_top = _prediccion_base(row_dict)
     ventaja = _ventaja_prediccion(row_dict)
     mejor_edge_pct = float(row_dict.get("mejor_edge_pct", 0) or 0)
@@ -1488,6 +1585,7 @@ def lectura_prediccion_partido(row_dict):
     prob_local = float(row_dict.get("prob_local", 0) or 0)
     prob_empate = float(row_dict.get("prob_empate", 0) or 0)
     prob_visitante = float(row_dict.get("prob_visitante", 0) or 0)
+    tpi_confidence_general = str(row_dict.get("tpi_confidence_general", "desconocida") or "desconocida")
     contexto = _contexto_competitivo(row_dict)
     jerarquia_lado = contexto.get("jerarquia_lado")
     jerarquia_diff = abs(float(contexto.get("jerarquia_diff", 0) or 0))
@@ -1501,6 +1599,9 @@ def lectura_prediccion_partido(row_dict):
     lado_top, prob_top, etiqueta_top = opciones_ordenadas[0]
     lado_segundo, prob_segundo, _ = opciones_ordenadas[1]
     diff = round(prob_top - prob_segundo, 1)
+
+    if _confidence_rank_tpi(tpi_confidence_general) <= 1:
+        return "Datos insuficientes para predicción fuerte"
 
     if lado_top == "empate":
         return "Empate probable"
@@ -1524,6 +1625,8 @@ def conclusion_prediccion_partido(row_dict):
     prob_empate = float(row_dict.get("prob_empate", 0) or 0)
     prob_visitante = float(row_dict.get("prob_visitante", 0) or 0)
 
+    if lectura == "Datos insuficientes para predicción fuerte":
+        return f"Datos insuficientes para predicción fuerte: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
     if lectura == "Partido muy parejo":
         return f"Partido muy parejo: local {round(prob_local,1)}% · empate {round(prob_empate,1)}% · visitante {round(prob_visitante,1)}%."
     if lectura == "Empate probable":
@@ -1901,6 +2004,9 @@ def asesor_apuesta(row_dict):
     cuota_local = float(row_dict.get("cuota_local", 0) or 0)
     cuota_empate = float(row_dict.get("cuota_empate", 0) or 0)
     cuota_visitante = float(row_dict.get("cuota_visitante", 0) or 0)
+    odds_source_partido = str(row_dict.get("odds_source", "") or "").strip() or (
+        "real" if _tiene_cuotas_reales_1x2(row_dict) else "estimated"
+    )
     apoyo_mercado = contexto["apoyo_mercado"]
     jerarquia_lado = contexto.get("jerarquia_lado")
     jerarquia_diff = abs(float(contexto.get("jerarquia_diff", 0) or 0))
@@ -1967,34 +2073,26 @@ def asesor_apuesta(row_dict):
         return round(max(10.0, min(95.0, score)), 1)
 
     def odds_market(nombre, mercado, prob):
-        if mercado == "1X2":
+        if mercado == "1X2" and odds_source_partido == "real":
             if nombre == "Gana el local":
                 return cuota_local
             if nombre == "Gana el visitante":
                 return cuota_visitante
             if nombre == "Empate":
                 return cuota_empate
-        return round(max(1.12, 100.0 / max(prob, 1.0)), 2)
+        return _fair_odds(prob)
 
-    def edge_value(prob, cuota, valor, score, categoria=None, mercado=None):
-        if cuota and mercado == "1X2":
+    def odds_source_market(mercado):
+        if mercado == "1X2" and odds_source_partido == "real":
+            return "real"
+        return "estimated"
+
+    def edge_value(prob, cuota, valor, score, categoria=None, mercado=None, odds_source="estimated"):
+        if cuota and mercado == "1X2" and odds_source == "real":
             edge_pct = round((prob / 100.0 - (1.0 / cuota)) * 100, 2)
             ev_pct = round((((prob / 100.0) * cuota) - 1.0) * 100, 2)
             return edge_pct, ev_pct
-
-        edge_pct = (valor * 1.55) + (score * 0.28)
-        if categoria == "dc":
-            edge_pct -= 7.0
-        elif categoria in {"under", "over"}:
-            edge_pct -= 3.0 if mercado in {"Under 4.5", "Over 1.5"} else 1.5
-        elif categoria == "score":
-            edge_pct -= 2.0
-        elif categoria == "win":
-            edge_pct += 2.5
-        elif categoria == "draw":
-            edge_pct += 1.0
-        edge_pct = round(max(-12.0, min(18.0, edge_pct)), 2)
-        return edge_pct, edge_pct
+        return None, None
 
     def score_pick(prob, edge_pct, coherencia, seguridad):
         edge_norm = max(0.0, min(100.0, 50.0 + edge_pct * 3.0))
@@ -2179,9 +2277,10 @@ def asesor_apuesta(row_dict):
         coherencia = coherencia_futbolistica(sesgo_lado, categoria)
         seguridad = seguridad_mercado_score()
         cuota = odds_market(nombre, mercado, prob)
-        edge_pct, ev_pct = edge_value(prob, cuota, valor, score, categoria, mercado)
+        cand_odds_source = odds_source_market(mercado)
+        edge_pct, ev_pct = edge_value(prob, cuota, valor, score, categoria, mercado, cand_odds_source)
         score_rentabilidad_val = score_rentabilidad(prob, cuota, edge_pct, ev_pct)
-        pick_score = score_pick(prob, edge_pct, coherencia, seguridad)
+        pick_score = score_pick(prob, edge_pct or 0.0, coherencia, seguridad)
 
         if categoria == "dc":
             pick_score -= 6.0
@@ -2240,6 +2339,7 @@ def asesor_apuesta(row_dict):
                 "cuota": round(cuota, 2) if cuota else None,
                 "edge_pct": edge_pct,
                 "ev_pct": ev_pct,
+                "odds_source": cand_odds_source,
                 "coherencia_futbolistica": coherencia,
                 "seguridad_mercado": seguridad,
                 "cuota_score": cuota_score(cuota),
@@ -2402,6 +2502,8 @@ def asesor_apuesta(row_dict):
             "cuota_pick": None,
             "edge_pick": 0.0,
             "ev_pick": 0.0,
+            "odds_source_pick": "estimated",
+            "alerta_cuota": "Cuota no confirmada. EV no validable.",
             "score_pick": 0.0,
             "justificacion_ranking": "",
             "top_picks": [],
@@ -2430,6 +2532,8 @@ def asesor_apuesta(row_dict):
             continue
         if cuota < 1.20:
             continue
+        if cand.get("odds_source") != "real":
+            continue
         if edge <= 0 or ev <= 0:
             continue
         if riesgo == "Riesgo alto" and not (ev >= 10 and cuota >= 1.60):
@@ -2449,6 +2553,8 @@ def asesor_apuesta(row_dict):
             "cuota_pick": None,
             "edge_pick": 0.0,
             "ev_pick": 0.0,
+            "odds_source_pick": "estimated",
+            "alerta_cuota": "Cuota no confirmada. EV no validable.",
             "score_pick": 0.0,
             "score_final": 0.0,
             "justificacion_ranking": "No hay picks con valor real",
@@ -2487,6 +2593,7 @@ def asesor_apuesta(row_dict):
         and mejor["coherencia_futbolistica"] >= 58
         and float(mejor.get("ev_pct") or 0.0) > 0
         and float(mejor.get("edge_pct") or 0.0) > 0
+        and mejor.get("odds_source") == "real"
     ):
         accion = "Apostar"
     elif mejor["prob"] >= 60 or mejor["riesgo"] != "Riesgo bajo" or consenso_score < 0.75:
@@ -2532,6 +2639,8 @@ def asesor_apuesta(row_dict):
         "cuota_pick": mejor.get("cuota"),
         "edge_pick": mejor.get("edge_pct"),
         "ev_pick": mejor.get("ev_pct"),
+        "odds_source_pick": mejor.get("odds_source", "estimated"),
+        "alerta_cuota": "" if mejor.get("odds_source") == "real" else "Cuota no confirmada. EV no validable.",
         "score_pick": mejor.get("score_pick"),
         "score_final": mejor.get("score_final", 0.0),
         "justificacion_ranking": justificacion_ranking,
@@ -2722,9 +2831,14 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             mercados_extra,
         )
 
-        edge_local = prob_local - (1 / row["cuota_local"])
-        edge_visitante = prob_visitante - (1 / row["cuota_visitante"])
-        edge_empate = prob_empate - (1 / row["cuota_empate"])
+        odds_source = "real" if _tiene_cuotas_reales_1x2(row) else "estimated"
+        cuota_local_modelo = float(row.get("cuota_local", 0) or 0) if odds_source == "real" else _fair_odds(prob_local * 100)
+        cuota_empate_modelo = float(row.get("cuota_empate", 0) or 0) if odds_source == "real" else _fair_odds(prob_empate * 100)
+        cuota_visitante_modelo = float(row.get("cuota_visitante", 0) or 0) if odds_source == "real" else _fair_odds(prob_visitante * 100)
+
+        edge_local = prob_local - (1 / cuota_local_modelo)
+        edge_visitante = prob_visitante - (1 / cuota_visitante_modelo)
+        edge_empate = prob_empate - (1 / cuota_empate_modelo)
 
         edges = {
             "Local": edge_local,
@@ -2804,13 +2918,13 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         razon_trampa = ""
 
         if ganador == "Gana local":
-            trampa, razon_trampa = detectar_trampa(prob_local, row["cuota_local"])
+            trampa, razon_trampa = detectar_trampa(prob_local, cuota_local_modelo)
 
         elif ganador == "Gana visitante":
-            trampa, razon_trampa = detectar_trampa(prob_visitante, row["cuota_visitante"])
+            trampa, razon_trampa = detectar_trampa(prob_visitante, cuota_visitante_modelo)
 
         elif ganador == "Empate":
-            trampa, razon_trampa = detectar_trampa(prob_empate, row["cuota_empate"])
+            trampa, razon_trampa = detectar_trampa(prob_empate, cuota_empate_modelo)
 
         if over > 0.55:
             goles = "Over 2.5"
@@ -2819,9 +2933,9 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         else:
             goles = "Línea dudosa"
 
-        value_local = calcular_value(prob_local, row["cuota_local"])
-        value_visitante = calcular_value(prob_visitante, row["cuota_visitante"])
-        value_empate = calcular_value(prob_empate, row["cuota_empate"])
+        value_local = calcular_value(prob_local, cuota_local_modelo)
+        value_visitante = calcular_value(prob_visitante, cuota_visitante_modelo)
+        value_empate = calcular_value(prob_empate, cuota_empate_modelo)
 
         confianza = calcular_confianza_ajustada(
             prob,
@@ -2832,11 +2946,11 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             confianza = max(confianza, 54)
 
         if ganador == "Gana local":
-            stake_label, stake_num = calcular_stake_kelly(prob_local, row["cuota_local"], factor=stake_factor_total)
+            stake_label, stake_num = calcular_stake_kelly(prob_local, cuota_local_modelo, factor=stake_factor_total)
         elif ganador == "Gana visitante":
-            stake_label, stake_num = calcular_stake_kelly(prob_visitante, row["cuota_visitante"], factor=stake_factor_total)
+            stake_label, stake_num = calcular_stake_kelly(prob_visitante, cuota_visitante_modelo, factor=stake_factor_total)
         elif ganador == "Empate":
-            stake_label, stake_num = calcular_stake_kelly(prob_empate, row["cuota_empate"], factor=stake_factor_total)
+            stake_label, stake_num = calcular_stake_kelly(prob_empate, cuota_empate_modelo, factor=stake_factor_total)
         else:
             stake_label, stake_num = "❌ NO APOSTAR", 0
 
@@ -2845,9 +2959,9 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             stake_label, stake_num = "🟢 BAJO (1-2%)", 1
 
         mercado = generar_mercado(ganador, goles)
-        ev_por_unidad = round((prob * row["cuota_local"] - 1), 3) if ganador == "Gana local" else (
-            round((prob * row["cuota_visitante"] - 1), 3) if ganador == "Gana visitante" else (
-                round((prob * row["cuota_empate"] - 1), 3) if ganador == "Empate" else 0.0
+        ev_por_unidad = round((prob * cuota_local_modelo - 1), 3) if ganador == "Gana local" else (
+            round((prob * cuota_visitante_modelo - 1), 3) if ganador == "Gana visitante" else (
+                round((prob * cuota_empate_modelo - 1), 3) if ganador == "Empate" else 0.0
             )
         )
 
@@ -2963,6 +3077,9 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             "tpi_local": meta_ajuste_1x2.get("tpi_local"),
             "tpi_visitante": meta_ajuste_1x2.get("tpi_visitante"),
             "tpi_diff": meta_ajuste_1x2.get("tpi_diff", 0.0),
+            "tpi_confidence_local": meta_ajuste_1x2.get("tpi_confidence_local", "desconocida"),
+            "tpi_confidence_visitante": meta_ajuste_1x2.get("tpi_confidence_visitante", "desconocida"),
+            "tpi_confidence_general": meta_ajuste_1x2.get("tpi_confidence_general", "desconocida"),
             "ajuste_jerarquia": meta_ajuste_1x2.get("ajuste_jerarquia", ""),
             "ajuste_tpi": meta_ajuste_1x2.get("ajuste_tpi", ""),
             "ajuste_1x2_local_pct": meta_ajuste_1x2.get("ajuste_1x2_local_pct", 0.0),
@@ -2985,9 +3102,10 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             "mercado_historial": mercado,
             "analisis": analisis,
             "estado": estado,
-            "cuota_local": row["cuota_local"],
-            "cuota_empate": row["cuota_empate"],
-            "cuota_visitante": row["cuota_visitante"],
+            "cuota_local": cuota_local_modelo,
+            "cuota_empate": cuota_empate_modelo,
+            "cuota_visitante": cuota_visitante_modelo,
+            "odds_source": odds_source,
             "prob_local_empate": round(mercados_extra["local_empate"] * 100, 1),
             "prob_visitante_empate": round(mercados_extra["visitante_empate"] * 100, 1),
             "prob_gana_cualquiera": round(mercados_extra["gana_cualquiera"] * 100, 1),
@@ -3055,6 +3173,8 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         row_result["cuota_pick"] = asesor.get("cuota_pick")
         row_result["edge_pick"] = asesor.get("edge_pick", 0.0)
         row_result["ev_pick"] = asesor.get("ev_pick", 0.0)
+        row_result["odds_source_pick"] = asesor.get("odds_source_pick", row_result.get("odds_source", "estimated"))
+        row_result["alerta_cuota"] = asesor.get("alerta_cuota", "")
         row_result["score_pick"] = asesor.get("score_pick", 0.0)
         row_result["score_final"] = asesor.get("score_final", 0.0)
         row_result["justificacion_ranking"] = asesor.get("justificacion_ranking", "")
@@ -3075,6 +3195,7 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             row_result[f"cuota_{n}"] = top.get("cuota")
             row_result[f"edge_{n}"] = top.get("edge_pct", 0.0)
             row_result[f"ev_{n}"] = top.get("ev_pct", 0.0)
+            row_result[f"odds_source_{n}"] = top.get("odds_source", "estimated")
             row_result[f"score_pick_{n}"] = top.get("score_pick", 0.0)
             row_result[f"score_final_{n}"] = top.get("score_final", 0.0)
             row_result[f"claves_{n}"] = top.get("claves", "")

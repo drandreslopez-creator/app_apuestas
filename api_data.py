@@ -648,9 +648,9 @@ def _fetch_matches_espn(fecha=None, limit=20):
                     "goleador_visitante": goleador_visitante.get("nombre"),
                     "goles_goleador_visitante": goleador_visitante.get("goles"),
                     "localia": 1,
-                    "cuota_local": (odds or {}).get("cuota_local", 2.2),
-                    "cuota_empate": (odds or {}).get("cuota_empate", 3.2),
-                    "cuota_visitante": (odds or {}).get("cuota_visitante", 2.8),
+                    "cuota_local": (odds or {}).get("cuota_local"),
+                    "cuota_empate": (odds or {}).get("cuota_empate"),
+                    "cuota_visitante": (odds or {}).get("cuota_visitante"),
                     "fuente_cuotas": "espn_odds" if odds else "fallback",
                     "market_match_score": 0.78 if odds else 0.25,
                     "bookmaker_count": 1 if odds else 0,
@@ -1411,9 +1411,9 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
                     market_match_score = 0.93
                     bookmaker_count = 1
                 else:
-                    cuota_local = 2.2
-                    cuota_visitante = 2.8
-                    cuota_empate = 3.2
+                    cuota_local = None
+                    cuota_visitante = None
+                    cuota_empate = None
                     fuente_cuotas = "fallback"
                     market_match_score = 0.25
                     bookmaker_count = 0
