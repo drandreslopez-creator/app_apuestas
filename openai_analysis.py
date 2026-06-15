@@ -55,6 +55,7 @@ def _default_ai_columns(df):
         "decision_ia": "",
         "prediccion_ia": "",
         "mercado_ia": "",
+        "segunda_opinion_ia": "",
         "pick_top1_ia": "",
         "mercado_top1_ia": "",
         "pick_top2_ia": "",
@@ -64,6 +65,14 @@ def _default_ai_columns(df):
         "confianza_ia": None,
         "analisis_ia": "",
         "claves_ia": "",
+        "prediccion_modelo": "",
+        "decision_modelo": "",
+        "pick_modelo": "",
+        "mercado_modelo": "",
+        "prediccion_final": "",
+        "decision_final": "",
+        "pick_final": "",
+        "mercado_final": "",
     }
     for col, value in defaults.items():
         if col not in vista.columns:
@@ -145,6 +154,8 @@ def _build_payload_rows(df):
                 "partido": row.get("partido", ""),
                 "liga": row.get("liga", ""),
                 "estado": row.get("estado_partido", ""),
+                "prediccion_partido_modelo": row.get("prediccion_partido", ""),
+                "conclusion_prediccion_modelo": row.get("conclusion_prediccion", ""),
                 "prediccion_actual": row.get("prediccion_simple", ""),
                 "decision_actual": row.get("decision_simple", ""),
                 "disciplina_actual": row.get("disciplina_simple", ""),
@@ -158,6 +169,9 @@ def _build_payload_rows(df):
                 "pick_3": row.get("pick_3", ""),
                 "mercado_3": row.get("mercado_3", ""),
                 "prob_3": row.get("prob_3", 0),
+                "prob_local_base": round(float(row.get("prob_local_base", 0) or 0), 1),
+                "prob_empate_base": round(float(row.get("prob_empate_base", 0) or 0), 1),
+                "prob_visitante_base": round(float(row.get("prob_visitante_base", 0) or 0), 1),
                 "prob_local": round(float(row.get("prob_local", 0) or 0), 1),
                 "prob_empate": round(float(row.get("prob_empate", 0) or 0), 1),
                 "prob_visitante": round(float(row.get("prob_visitante", 0) or 0), 1),
@@ -180,6 +194,13 @@ def _build_payload_rows(df):
                 "consenso_score": round(float(row.get("consenso_score", 0) or 0), 2),
                 "contexto_score": round(float(row.get("contexto_score", 0) or 0), 2),
                 "contexto_alertas": row.get("contexto_alertas", ""),
+                "tpi_local": round(float(row.get("tpi_local", 0) or 0), 2),
+                "tpi_visitante": round(float(row.get("tpi_visitante", 0) or 0), 2),
+                "tpi_diff": round(float(row.get("tpi_diff", 0) or 0), 2),
+                "ajuste_jerarquia": row.get("ajuste_jerarquia", ""),
+                "motivo_ajuste_1x2": row.get("motivo_ajuste_1x2", ""),
+                "auditoria_prediccion_alertas": row.get("auditoria_prediccion_alertas", ""),
+                "auditoria_motivo": row.get("auditoria_motivo", ""),
                 "fuente_cuotas": row.get("fuente_cuotas", ""),
                 "racha_local": row.get("racha_local", ""),
                 "racha_visitante": row.get("racha_visitante", ""),
@@ -207,38 +228,56 @@ def _build_payload_rows(df):
 
 def _prompt_analisis(payload):
     return (
-        "Eres un AUDITOR experto de un modelo de apuestas deportivas. "
-        "Tu trabajo NO es repetir los datos ni embellecer el texto. Tu trabajo es buscar fallas de lógica del motor principal. "
-        "Debes cuestionar sesgos de localía, picks incoherentes con la jerarquía futbolística, mercados demasiado cómodos elegidos por inercia, "
-        "y contradicciones entre el razonamiento y el mercado recomendado. "
+        "Eres un SEGUNDO ANALISTA IA y AUDITOR de un modelo de apuestas deportivas. "
+        "Tu trabajo NO es repetir los datos ni embellecer el texto. Tu trabajo es revisar primero la lectura futbolística del partido y luego la recomendación de apuesta. "
+        "Debes actuar al mismo tiempo como estadístico, scout, analista de apuestas y auditor. "
+        "Primero debes decidir si estás de acuerdo con la predicción 1X2 del modelo. Después debes decidir si estás de acuerdo con el mercado recomendado. "
+        "Debes cuestionar sesgos de localía, sobrepeso de racha reciente, picks incoherentes con la jerarquía futbolística, mercados demasiado cómodos elegidos por inercia, "
+        "y contradicciones entre el razonamiento del partido y la apuesta elegida. "
         "Analiza los partidos usando los datos entregados y tu conocimiento general de jerarquía futbolística cuando sea razonable. "
         "No inventes lesiones, cuotas ni alineaciones que no estén en los datos. "
         "Si el motor luce equivocado, debes corregirlo. Si el motor está razonable, debes respaldarlo. "
         "No uses frases vagas. Habla como segundo analista crítico. "
-        "Debes hacerte dos preguntas antes de responder: "
-        "1) ¿Los tres mercados principales son coherentes entre sí? "
-        "2) ¿Existe un mercado más lógico que no aparece en el top 3 actual? "
+        "Debes hacerte cuatro preguntas antes de responder: "
+        "1) ¿Estoy de acuerdo con la lectura 1X2 del modelo? "
+        "2) ¿La predicción 1X2 es creíble según TPI, forma y contexto? "
+        "3) ¿Los tres mercados principales son coherentes entre sí? "
+        "4) ¿Existe un mercado más lógico que no aparece en el top 3 actual? "
+        "La IA debe poder decir cosas como: el modelo subestima a España, el modelo sobrevalora la localía, el modelo sobrevalora la racha reciente, el modelo ignora la diferencia de jerarquía. "
         "Si detectas incoherencia, puedes reordenar o sustituir el top 3 final. "
         "Devuelve exclusivamente un JSON array. "
-        "Cada elemento debe tener: fixture_id, veredicto_ia, decision_ia, prediccion_ia, mercado_ia, pick_top1_ia, mercado_top1_ia, pick_top2_ia, mercado_top2_ia, pick_top3_ia, mercado_top3_ia, confianza_ia, analisis_ia, claves_ia. "
+        "Cada elemento debe tener: fixture_id, veredicto_ia, decision_ia, prediccion_ia, mercado_ia, segunda_opinion_ia, pick_top1_ia, mercado_top1_ia, pick_top2_ia, mercado_top2_ia, pick_top3_ia, mercado_top3_ia, confianza_ia, analisis_ia, claves_ia. "
         "veredicto_ia debe ser exactamente uno de: RESPALDA, CUESTIONA, CORRIGE. "
-        "decision_ia debe ser exactamente uno de: Apostar, Mirar, Evitar. "
+        "decision_ia debe ser exactamente uno de: Apostar, Mirar, No tocar. "
         "prediccion_ia debe ser exactamente uno de: Gana el local, Empate, Gana el visitante, Sin lado claro. "
         "mercado_ia debe ser exactamente uno de: Gana local, Gana visitante, Empate, Local o empate, Visitante o empate, Local anota 1+, Visitante anota 1+, Ambos anotan, Over 1.5, Over 2.5, Under 3.5, Under 4.5, No apostar. "
+        "segunda_opinion_ia debe ser una sola frase corta en español explicando si confirmas, cuestionas o corriges la lectura del modelo. "
         "pick_top1_ia, pick_top2_ia y pick_top3_ia deben usar exactamente uno de: Gana el local, Gana el visitante, Empate, Local o empate, Visitante o empate, Local anota al menos 1, Visitante anota al menos 1, Ambos anotan, Más de 1.5 goles, Más de 2.5 goles, Menos de 3.5 goles, Menos de 4.5 goles, vacío si no aplica. "
         "mercado_top1_ia, mercado_top2_ia y mercado_top3_ia deben usar exactamente uno de: 1X2, Doble oportunidad, Equipo marca, BTTS, Over 1.5, Over 2.5, Under 3.5, Under 4.5, vacío si no aplica. "
         "confianza_ia debe ser un entero entre 0 y 100. "
-        "analisis_ia debe ser una explicación breve en español, máximo 42 palabras, enfocada en la falla o validación del motor. "
+        "analisis_ia debe ser una explicación breve en español, máximo 42 palabras, enfocada en por qué confirmas, cuestionas o corriges la predicción y/o la apuesta. "
         "claves_ia debe ser una frase corta con 2 o 3 claves concretas separadas por coma. "
         "Reglas clave: "
         "1) Si el motor favorece a un local débil frente a un visitante de jerarquía claramente superior, debes cuestionarlo o corregirlo. "
-        "2) Si el motor se refugia en un mercado cómodo como Under 4.5 sin ser la mejor apuesta defendible, debes señalarlo. "
-        "3) Si el razonamiento sugiere una cosa y el mercado elegido otra, debes corregir el mercado. "
-        "4) No estás obligado a coincidir con el motor. "
-        "5) Solo respalda cuando la lógica del motor aguanta el escrutinio. "
+        "2) Si el motor subestima a un favorito histórico, debes señalarlo. "
+        "3) Si el motor se refugia en un mercado cómodo como Under 4.5 sin ser la mejor apuesta defendible, debes señalarlo. "
+        "4) Si el razonamiento sugiere una cosa y el mercado elegido otra, debes corregir el mercado. "
+        "5) No estás obligado a coincidir con el motor. "
+        "6) Solo respalda cuando la lógica del motor aguanta el escrutinio. "
         "Datos:\n"
         + json.dumps(payload, ensure_ascii=False)
     )
+
+
+def _prediccion_a_lectura(prediccion):
+    pred = str(prediccion or "").strip()
+    mapping = {
+        "Gana el local": "Creo que gana el local",
+        "Gana el visitante": "Creo que gana el visitante",
+        "Empate": "Empate probable",
+        "Sin lado claro": "Partido muy parejo",
+    }
+    return mapping.get(pred, pred)
 
 
 def analizar_partidos_con_openai(df, max_partidos=12):
@@ -284,6 +323,7 @@ def analizar_partidos_con_openai(df, max_partidos=12):
             "decision_ia": str(item.get("decision_ia", "")).strip(),
             "prediccion_ia": str(item.get("prediccion_ia", "")).strip(),
             "mercado_ia": str(item.get("mercado_ia", "")).strip(),
+            "segunda_opinion_ia": str(item.get("segunda_opinion_ia", "")).strip(),
             "pick_top1_ia": str(item.get("pick_top1_ia", "")).strip(),
             "mercado_top1_ia": str(item.get("mercado_top1_ia", "")).strip(),
             "pick_top2_ia": str(item.get("pick_top2_ia", "")).strip(),
@@ -340,6 +380,11 @@ def analizar_partidos_con_openai(df, max_partidos=12):
         for col, value in ai_row.items():
             vista.at[idx, col] = value
 
+        vista.at[idx, "prediccion_modelo"] = str(row.get("prediccion_partido", "") or "")
+        vista.at[idx, "decision_modelo"] = str(row.get("decision_simple", "") or "")
+        vista.at[idx, "pick_modelo"] = str(row.get("pick_recomendado", "") or "")
+        vista.at[idx, "mercado_modelo"] = str(row.get("mercado_recomendado", "") or "")
+
         decision_actual = str(vista.at[idx, "decision_simple"] or "Evitar")
         disciplina_actual = str(vista.at[idx, "disciplina_simple"] or "No tocar")
         veredicto_ia = ai_row.get("veredicto_ia", "")
@@ -367,8 +412,9 @@ def analizar_partidos_con_openai(df, max_partidos=12):
                 vista.at[idx, "probabilidad_pick"] = vista.at[idx, "prob_1"]
 
         if veredicto_ia == "CORRIGE" and confianza_ia >= 70:
-            if pred_ia and pred_ia != "Sin lado claro":
+            if pred_ia:
                 vista.at[idx, "prediccion_simple"] = pred_ia
+                vista.at[idx, "prediccion_partido"] = _prediccion_a_lectura(pred_ia)
             if mercado_ia and mercado_ia != "No apostar":
                 vista.at[idx, "mercado_recomendado"] = mercado_ia
                 vista.at[idx, "pick_recomendado"] = mercado_ia
@@ -406,5 +452,11 @@ def analizar_partidos_con_openai(df, max_partidos=12):
             vista.at[idx, "analisis_ia"] = analisis_ia
         if claves_ia:
             vista.at[idx, "claves_ia"] = claves_ia
+
+        pred_final = str(vista.at[idx, "prediccion_partido"] or "") or _prediccion_a_lectura(pred_ia or pred_actual)
+        vista.at[idx, "prediccion_final"] = pred_final
+        vista.at[idx, "decision_final"] = str(vista.at[idx, "decision_simple"] or decision_actual)
+        vista.at[idx, "pick_final"] = str(vista.at[idx, "pick_recomendado"] or "")
+        vista.at[idx, "mercado_final"] = str(vista.at[idx, "mercado_recomendado"] or "")
 
     return vista

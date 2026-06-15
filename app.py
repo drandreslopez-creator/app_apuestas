@@ -101,6 +101,22 @@ def preparar_resultados_ui(df):
         "prediccion_simple": "Partido para mirar",
         "prediccion_partido": "Partido para mirar",
         "conclusion_prediccion": "",
+        "prob_local_base": None,
+        "prob_empate_base": None,
+        "prob_visitante_base": None,
+        "team_strength_local": None,
+        "team_strength_visitante": None,
+        "tpi_local": None,
+        "tpi_visitante": None,
+        "tpi_diff": 0.0,
+        "ajuste_jerarquia": "",
+        "ajuste_tpi": "",
+        "motivo_ajuste_1x2": "",
+        "auditoria_alerta_prediccion": False,
+        "auditoria_prediccion_alertas": "",
+        "auditoria_ajuste_aplicado": "",
+        "auditoria_motivo": "",
+        "auditoria_confianza_penalizacion": 0,
         "decision_simple": "Mirar",
         "disciplina_simple": "Solo seguimiento",
         "riesgo_simple": "Riesgo medio",
@@ -169,8 +185,17 @@ def preparar_resultados_ui(df):
         "veredicto_ia": "",
         "mercado_ia": "",
         "confianza_ia": None,
+        "segunda_opinion_ia": "",
         "analisis_ia": "",
         "claves_ia": "",
+        "prediccion_modelo": "",
+        "decision_modelo": "",
+        "pick_modelo": "",
+        "mercado_modelo": "",
+        "prediccion_final": "",
+        "decision_final": "",
+        "pick_final": "",
+        "mercado_final": "",
         "prioridad_liga": 0,
     }
 
@@ -266,14 +291,16 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
     hora_top = row.get("hora_partido", "")
     estado_top = row.get("estado_partido", "NS")
     decision_top = row.get("decision_simple", "Mirar")
-    pred_top = row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
-    pick_top = row.get("pick_recomendado") or pred_top
-    mercado_top = row.get("mercado_recomendado") or "1X2"
+    pred_top = row.get("prediccion_final") or row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
+    pick_top = row.get("pick_final") or row.get("pick_recomendado") or pred_top
+    mercado_top = row.get("mercado_final") or row.get("mercado_recomendado") or "1X2"
     disciplina_top = row.get("disciplina_simple", "Solo seguimiento")
     riesgo_top = row.get("riesgo_simple", "Riesgo medio")
     consenso_top = row.get("consenso_analitico", "")
     analisis_ia = str(row.get("analisis_ia", "") or "").strip()
+    segunda_opinion_ia = str(row.get("segunda_opinion_ia", "") or "").strip()
     claves_ia = str(row.get("claves_ia", "") or "").strip()
+    veredicto_ia = str(row.get("veredicto_ia", "") or "").strip()
     logo_local = row.get("logo_local") or ""
     logo_visitante = row.get("logo_visitante") or ""
     marcador_local = row.get("marcador_local", 0)
@@ -339,8 +366,8 @@ def render_tarjeta_compacta(row, mostrar_disciplina=False):
                 ""
             )
             + (
-                f"<div style='font-size:10px;color:{COLOR_TEXT_MUTED};font-weight:600;text-align:center;margin-top:3px;'>Socio IA: {analisis_ia}</div>"
-                if analisis_ia else
+                f"<div style='font-size:10px;color:{COLOR_TEXT_MUTED};font-weight:600;text-align:center;margin-top:3px;'>IA {veredicto_ia}: {segunda_opinion_ia or analisis_ia}</div>"
+                if (segunda_opinion_ia or analisis_ia) else
                 ""
             )
             + (
@@ -386,17 +413,34 @@ def render_partido(row):
     consenso_score = row.get("consenso_score", "")
     consenso_notas = str(row.get("consenso_notas", "") or "").strip()
     analisis_ia = str(row.get("analisis_ia", "") or "").strip()
+    segunda_opinion_ia = str(row.get("segunda_opinion_ia", "") or "").strip()
     veredicto_ia = str(row.get("veredicto_ia", "") or "").strip()
     decision_ia = str(row.get("decision_ia", "") or "").strip()
     mercado_ia = str(row.get("mercado_ia", "") or "").strip()
     claves_ia = str(row.get("claves_ia", "") or "").strip()
-    prediccion_partido = row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
+    prediccion_modelo = row.get("prediccion_modelo") or row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
+    prediccion_partido = row.get("prediccion_final") or row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
     conclusion_prediccion = str(row.get("conclusion_prediccion", "") or "").strip()
+    prob_local_base = row.get("prob_local_base")
+    prob_empate_base = row.get("prob_empate_base")
+    prob_visitante_base = row.get("prob_visitante_base")
     prob_local_1x2 = row.get("prob_local")
     prob_empate_1x2 = row.get("prob_empate")
     prob_visitante_1x2 = row.get("prob_visitante")
-    pick_recomendado = row.get("pick_recomendado") or prediccion_partido
-    mercado_recomendado = row.get("mercado_recomendado") or "1X2"
+    team_strength_local = row.get("team_strength_local")
+    team_strength_visitante = row.get("team_strength_visitante")
+    tpi_local = row.get("tpi_local")
+    tpi_visitante = row.get("tpi_visitante")
+    tpi_diff = row.get("tpi_diff")
+    ajuste_jerarquia = str(row.get("ajuste_jerarquia", "") or "").strip()
+    auditoria_ajuste_aplicado = str(row.get("auditoria_ajuste_aplicado", "") or "").strip()
+    auditoria_motivo = str(row.get("auditoria_motivo", "") or "").strip()
+    auditoria_prediccion_alertas = str(row.get("auditoria_prediccion_alertas", "") or "").strip()
+    auditoria_confianza_penalizacion = row.get("auditoria_confianza_penalizacion", 0)
+    pick_modelo = row.get("pick_modelo") or row.get("pick_recomendado") or prediccion_modelo
+    mercado_modelo = row.get("mercado_modelo") or row.get("mercado_recomendado") or "1X2"
+    pick_recomendado = row.get("pick_final") or row.get("pick_recomendado") or prediccion_partido
+    mercado_recomendado = row.get("mercado_final") or row.get("mercado_recomendado") or "1X2"
     conclusion_apuesta = str(row.get("conclusion_apuesta", "") or "").strip()
     probabilidad_pick = row.get("probabilidad_pick")
     confianza_pick = row.get("confianza_pick", "")
@@ -550,6 +594,37 @@ def render_partido(row):
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-bottom:6px;'><b>Qué creo que va a pasar:</b> {conclusion_prediccion}</div>",
                 unsafe_allow_html=True,
             )
+            if segunda_opinion_ia or analisis_ia:
+                etiqueta_ia = f" ({veredicto_ia})" if veredicto_ia else ""
+                st.markdown(
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Modelo:</b> {prediccion_modelo}</div>"
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Analista IA{etiqueta_ia}:</b> {segunda_opinion_ia or analisis_ia}</div>"
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_MAIN};margin-bottom:6px;'><b>Predicción final:</b> {prediccion_partido}</div>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown(
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>1X2 base:</b> Local {_fmt_pct(prob_local_base)} · Empate {_fmt_pct(prob_empate_base)} · Visitante {_fmt_pct(prob_visitante_base)}</div>"
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>1X2 ajustado:</b> Local {_fmt_pct(prob_local_1x2)} · Empate {_fmt_pct(prob_empate_1x2)} · Visitante {_fmt_pct(prob_visitante_1x2)}</div>"
+                + (
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>TPI:</b> Local {_fmt_num(tpi_local)} · Visitante {_fmt_num(tpi_visitante)} · Dif. {_fmt_num(tpi_diff)}</div>"
+                    if not _is_missing(tpi_local) and not _is_missing(tpi_visitante) else
+                    ""
+                )
+                + (
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Motivo del ajuste:</b> {ajuste_jerarquia}</div>"
+                    if ajuste_jerarquia and ajuste_jerarquia != 'Sin ajuste relevante' else
+                    ""
+                ),
+                unsafe_allow_html=True,
+            )
+            if auditoria_ajuste_aplicado:
+                st.markdown(
+                    f"<div style='font-size:12px;color:#ff9f7a;margin-bottom:6px;'><b>{auditoria_ajuste_aplicado}</b></div>"
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Motivo:</b> {auditoria_motivo or 'Jerarquía histórica no coherente'}</div>"
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Alertas:</b> {auditoria_prediccion_alertas}</div>"
+                    f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-bottom:6px;'><b>Penalización de confianza:</b> -{auditoria_confianza_penalizacion}</div>",
+                    unsafe_allow_html=True,
+                )
         if not sin_valor_real:
             st.markdown(
                 f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};'><b>Lectura rápida:</b> {row.get('contexto_simple', 'Sin contexto adicional')}</div>",
@@ -573,17 +648,17 @@ def render_partido(row):
             auditor_tags = " · ".join([v for v in [veredicto_ia, decision_ia] if v])
             etiqueta = f" ({auditor_tags})" if auditor_tags else ""
             st.markdown(
-                f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-top:6px;'><b>Auditor IA{etiqueta}:</b> {analisis_ia}</div>",
+                f"<div style='font-size:12px;color:{COLOR_TEXT_MUTED};margin-top:6px;'><b>Segunda opinión IA{etiqueta}:</b> {analisis_ia}</div>",
                 unsafe_allow_html=True,
             )
         if mercado_ia:
             st.markdown(
-                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Mercado sugerido por auditor:</b> {mercado_ia}</div>",
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Mercado sugerido por IA:</b> {mercado_ia}</div>",
                 unsafe_allow_html=True,
             )
         if claves_ia:
             st.markdown(
-                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Hallazgos del auditor:</b> {claves_ia}</div>",
+                f"<div style='font-size:12px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Hallazgos de la IA:</b> {claves_ia}</div>",
                 unsafe_allow_html=True,
             )
 

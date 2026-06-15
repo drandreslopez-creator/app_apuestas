@@ -244,30 +244,45 @@ def validar_coherencia_mercados(prob_local, prob_empate, prob_visitante, mercado
 
 TEAM_STRENGTH_HINTS = {
     "argentina": 91,
-    "brazil": 92,
-    "brasil": 92,
-    "france": 90,
+    "brazil": 95,
+    "brasil": 95,
+    "france": 92,
     "england": 88,
     "spain": 87,
     "germany": 86,
     "portugal": 86,
     "netherlands": 85,
-    "belgium": 84,
+    "belgium": 88,
     "croatia": 82,
-    "uruguay": 81,
-    "morocco": 80,
-    "switzerland": 79,
-    "swiss": 79,
-    "scotland": 77,
-    "united states": 76,
-    "usa": 76,
-    "usmnt": 76,
+    "uruguay": 84,
+    "morocco": 78,
+    "switzerland": 82,
+    "swiss": 82,
+    "scotland": 76,
+    "united states": 78,
+    "usa": 78,
+    "usmnt": 78,
     "paraguay": 74,
-    "canada": 73,
-    "bosnia": 71,
-    "bosnia-herzegovina": 71,
-    "qatar": 68,
-    "haiti": 58,
+    "canada": 72,
+    "bosnia": 70,
+    "bosnia-herzegovina": 70,
+    "qatar": 62,
+    "haiti": 50,
+    "saudi arabia": 56,
+    "saudi": 56,
+    "cape verde": 54,
+    "cabo verde": 54,
+    "algeria": 64,
+    "argelia": 64,
+    "egypt": 68,
+    "senegal": 74,
+}
+
+
+SELECCIONES_TOP_GROUPS = {
+    "fifa world cup",
+    "fifa club world cup",
+    "eliminatorias mundial",
 }
 
 
@@ -293,6 +308,281 @@ def _jerarquia_futbolistica(local, visitante):
     if diff <= -5:
         return {"diff": diff, "lado": "visitante"}
     return {"diff": diff, "lado": None}
+
+
+def _es_partido_selecciones(row_dict):
+    grupo = str(row_dict.get("grupo_liga", "") or "").strip().lower()
+    liga = str(row_dict.get("liga", "") or "").strip().lower()
+    texto = f"{grupo} {liga}"
+    if any(tag in texto for tag in SELECCIONES_TOP_GROUPS):
+        return True
+    local = _team_strength_hint(row_dict.get("local"))
+    visitante = _team_strength_hint(row_dict.get("visitante"))
+    return local is not None and visitante is not None and float(row_dict.get("prioridad_liga", 0) or 0) >= 90
+
+
+def _es_partido_clubes(row_dict):
+    if _es_partido_selecciones(row_dict):
+        return False
+    prioridad = float(row_dict.get("prioridad_liga", 0) or 0)
+    return prioridad >= 70
+
+
+def _normalizar_ppm(ppm):
+    try:
+        ppm = float(ppm)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(ppm / 3.0, 1.0))
+
+
+def _normalizar_forma_score(forma):
+    try:
+        forma = float(forma)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(forma / 30.0, 1.0))
+
+
+def _normalizar_goles(goles):
+    try:
+        goles = float(goles)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(goles / 3.0, 1.0))
+
+
+def team_power_index(row_dict, side):
+    local_side = side == "local"
+    team_name = row_dict.get("local") if local_side else row_dict.get("visitante")
+    rival_name = row_dict.get("visitante") if local_side else row_dict.get("local")
+    fuerza = float(_team_strength_hint(team_name) or 60.0)
+    fuerza_rival = float(_team_strength_hint(rival_name) or 60.0)
+    fuerza_norm = max(0.0, min(fuerza / 100.0, 1.0))
+    rival_norm = max(0.0, min(fuerza_rival / 100.0, 1.0))
+    quality_rivals = max(0.0, min((0.55 + (rival_norm - 0.60) * 0.65), 1.0))
+    ppm = _normalizar_ppm(
+        row_dict.get("ppm_local_casa", row_dict.get("ppm_local"))
+        if local_side else
+        row_dict.get("ppm_visitante_fuera", row_dict.get("ppm_visitante"))
+    )
+    forma = _normalizar_forma_score(row_dict.get("forma_local") if local_side else row_dict.get("forma_visitante"))
+    goles = _normalizar_goles(row_dict.get("goles_local") if local_side else row_dict.get("goles_visitante"))
+    goles_rival = _normalizar_goles(row_dict.get("goles_visitante") if local_side else row_dict.get("goles_local"))
+    goal_diff_score = max(0.0, min(0.5 + (goles - goles_rival) * 0.35, 1.0))
+    localia = 1.0 if local_side and row_dict.get("localia", 1) else 0.0
+    prioridad_liga = max(0.0, min(float(row_dict.get("prioridad_liga", 0) or 0) / 100.0, 1.0))
+
+    if _es_partido_selecciones(row_dict):
+        score = (
+            fuerza_norm * 0.40
+            + fuerza_norm * 0.20
+            + ((ppm + forma) / 2.0) * 0.15
+            + goal_diff_score * 0.10
+            + quality_rivals * 0.10
+            + localia * 0.05
+        ) * 100.0
+    else:
+        score = (
+            fuerza_norm * 0.28
+            + prioridad_liga * 0.14
+            + ppm * 0.18
+            + forma * 0.15
+            + goal_diff_score * 0.15
+            + localia * 0.10
+        ) * 100.0
+    return round(score, 2)
+
+
+def team_strength_score(row_dict, side):
+    return team_power_index(row_dict, side)
+
+
+def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitante):
+    base = {
+        "local": float(prob_local or 0.0),
+        "empate": float(prob_empate or 0.0),
+        "visitante": float(prob_visitante or 0.0),
+    }
+    if not (_es_partido_selecciones(row_dict) or _es_partido_clubes(row_dict)):
+        return base, {
+            "team_strength_local": None,
+            "team_strength_visitante": None,
+            "tpi_local": None,
+            "tpi_visitante": None,
+            "tpi_diff": 0.0,
+            "ajuste_jerarquia": "",
+            "ajuste_tpi": "",
+            "ajuste_1x2_local_pct": 0.0,
+            "ajuste_1x2_visitante_pct": 0.0,
+            "motivo_ajuste_1x2": "Sin ajuste especial",
+        }
+
+    tpi_local = team_power_index(row_dict, "local")
+    tpi_visitante = team_power_index(row_dict, "visitante")
+    diff = round(tpi_local - tpi_visitante, 2)
+
+    eps = 1e-6
+    log_local = np.log(max(base["local"], eps))
+    log_empate = np.log(max(base["empate"], eps))
+    log_visitante = np.log(max(base["visitante"], eps))
+
+    if abs(diff) >= 40:
+        alpha = 1.35
+        draw_penalty = 0.22
+        tipo_ajuste = "ajuste muy fuerte"
+    elif abs(diff) >= 20:
+        alpha = 0.90
+        draw_penalty = 0.12
+        tipo_ajuste = "ajuste fuerte"
+    else:
+        alpha = 0.45
+        draw_penalty = 0.05
+        tipo_ajuste = "ajuste suave"
+
+    delta = (diff / 25.0) * alpha
+    log_local += delta
+    log_visitante -= delta
+    log_empate -= min(abs(diff) / 100.0, 0.18) * draw_penalty
+
+    exps = np.exp([log_local, log_empate, log_visitante])
+    probs = exps / exps.sum()
+    ajustado = {
+        "local": round(float(probs[0]), 6),
+        "empate": round(float(probs[1]), 6),
+        "visitante": round(float(probs[2]), 6),
+    }
+
+    # La localía no puede compensar diferencias estructurales extremas.
+    if diff <= -30 and ajustado["local"] >= ajustado["visitante"]:
+        transfer = min(0.18, (ajustado["local"] - ajustado["visitante"]) / 2.0 + 0.03)
+        ajustado["local"] = max(0.12, ajustado["local"] - transfer)
+        ajustado["visitante"] = min(0.78, ajustado["visitante"] + transfer * 0.85)
+        ajustado["empate"] = max(0.12, 1.0 - ajustado["local"] - ajustado["visitante"])
+    elif diff >= 30 and ajustado["visitante"] >= ajustado["local"]:
+        transfer = min(0.18, (ajustado["visitante"] - ajustado["local"]) / 2.0 + 0.03)
+        ajustado["visitante"] = max(0.12, ajustado["visitante"] - transfer)
+        ajustado["local"] = min(0.78, ajustado["local"] + transfer * 0.85)
+        ajustado["empate"] = max(0.12, 1.0 - ajustado["local"] - ajustado["visitante"])
+
+    total = ajustado["local"] + ajustado["empate"] + ajustado["visitante"]
+    ajustado = {k: round(v / total, 6) for k, v in ajustado.items()}
+
+    motivo = "Sin ajuste relevante"
+    if diff <= -20:
+        motivo = (
+            f"Visitante superior por TPI ({tipo_ajuste}): ajuste aplicado "
+            f"{round((ajustado['local'] - base['local']) * 100, 1)}% al local, "
+            f"+{round((ajustado['visitante'] - base['visitante']) * 100, 1)}% al visitante."
+        )
+    elif diff >= 20:
+        motivo = (
+            f"Local superior por TPI ({tipo_ajuste}): ajuste aplicado "
+            f"+{round((ajustado['local'] - base['local']) * 100, 1)}% al local, "
+            f"{round((ajustado['visitante'] - base['visitante']) * 100, 1)}% al visitante."
+        )
+    elif abs(diff) >= 8:
+        motivo = (
+            f"Diferencia moderada de TPI ({tipo_ajuste}): local {round((ajustado['local'] - base['local']) * 100, 1)}% "
+            f"· visitante {round((ajustado['visitante'] - base['visitante']) * 100, 1)}%."
+        )
+
+    return ajustado, {
+        "team_strength_local": tpi_local,
+        "team_strength_visitante": tpi_visitante,
+        "tpi_local": tpi_local,
+        "tpi_visitante": tpi_visitante,
+        "tpi_diff": diff,
+        "ajuste_jerarquia": motivo,
+        "ajuste_tpi": motivo,
+        "ajuste_1x2_local_pct": round((ajustado["local"] - base["local"]) * 100, 1),
+        "ajuste_1x2_visitante_pct": round((ajustado["visitante"] - base["visitante"]) * 100, 1),
+        "motivo_ajuste_1x2": motivo,
+    }
+
+
+def auditar_prediccion(row_dict, base_probs, adjusted_probs, meta):
+    local = float(adjusted_probs.get("local", 0.0) or 0.0)
+    empate = float(adjusted_probs.get("empate", 0.0) or 0.0)
+    visitante = float(adjusted_probs.get("visitante", 0.0) or 0.0)
+    tpi_local = float(meta.get("tpi_local") or 0.0)
+    tpi_visitante = float(meta.get("tpi_visitante") or 0.0)
+    tpi_diff = float(meta.get("tpi_diff") or 0.0)
+    es_selecciones = _es_partido_selecciones(row_dict)
+
+    alertas = []
+    ajuste_aplicado = False
+    confianza_penalizacion = 0
+
+    # Caso 1: equipo estructuralmente inferior favorito sobre superior.
+    if es_selecciones and tpi_diff <= -8 and local > visitante:
+        shift = min(0.12, ((local - visitante) / 2.0) + 0.03)
+        local = max(0.12, local - shift)
+        visitante = min(0.78, visitante + shift * 0.85)
+        empate = max(0.12, 1.0 - local - visitante)
+        alertas.append("jerarquía histórica no coherente: local inferior aparecía por encima del visitante")
+        confianza_penalizacion += 10
+        ajuste_aplicado = True
+    elif es_selecciones and tpi_diff >= 8 and visitante > local:
+        shift = min(0.12, ((visitante - local) / 2.0) + 0.03)
+        visitante = max(0.12, visitante - shift)
+        local = min(0.78, local + shift * 0.85)
+        empate = max(0.12, 1.0 - local - visitante)
+        alertas.append("jerarquía histórica no coherente: visitante inferior aparecía por encima del local")
+        confianza_penalizacion += 10
+        ajuste_aplicado = True
+
+    # Caso 2: favoritos históricos demasiado bajos.
+    if es_selecciones and tpi_diff >= 20 and local < 0.60:
+        uplift = min(0.14, 0.60 - local + 0.02)
+        local = min(0.82, local + uplift)
+        visitante = max(0.08, visitante - uplift * 0.70)
+        empate = max(0.10, 1.0 - local - visitante)
+        alertas.append("favorito histórico demasiado bajo: se elevó probabilidad del local")
+        confianza_penalizacion += 6
+        ajuste_aplicado = True
+    elif es_selecciones and tpi_diff <= -20 and visitante < 0.60:
+        uplift = min(0.14, 0.60 - visitante + 0.02)
+        visitante = min(0.82, visitante + uplift)
+        local = max(0.08, local - uplift * 0.70)
+        empate = max(0.10, 1.0 - local - visitante)
+        alertas.append("favorito histórico demasiado bajo: se elevó probabilidad del visitante")
+        confianza_penalizacion += 6
+        ajuste_aplicado = True
+
+    # Caso 3: contradicción TPI fuerte vs salida final todavía tibia.
+    if es_selecciones and abs(tpi_diff) >= 25:
+        if tpi_diff <= -30 and visitante < 0.40:
+            uplift = min(0.10, 0.40 - visitante + 0.02)
+            visitante = min(0.78, visitante + uplift)
+            local = max(0.10, local - uplift * 0.75)
+            empate = max(0.10, 1.0 - local - visitante)
+            alertas.append("predicción contradice TPI: visitante muy superior seguía demasiado bajo")
+            confianza_penalizacion += 8
+            ajuste_aplicado = True
+        elif tpi_diff >= 30 and local < 0.40:
+            uplift = min(0.10, 0.40 - local + 0.02)
+            local = min(0.78, local + uplift)
+            visitante = max(0.10, visitante - uplift * 0.75)
+            empate = max(0.10, 1.0 - local - visitante)
+            alertas.append("predicción contradice TPI: local muy superior seguía demasiado bajo")
+            confianza_penalizacion += 8
+            ajuste_aplicado = True
+
+    total = local + empate + visitante
+    audited = {
+        "local": round(local / total, 6),
+        "empate": round(empate / total, 6),
+        "visitante": round(visitante / total, 6),
+    }
+
+    return audited, {
+        "auditoria_alerta_prediccion": bool(alertas),
+        "auditoria_prediccion_alertas": " | ".join(alertas),
+        "auditoria_ajuste_aplicado": "⚠️ Ajuste de auditoría aplicado" if ajuste_aplicado else "",
+        "auditoria_motivo": "Jerarquía histórica no coherente" if alertas else "",
+        "auditoria_confianza_penalizacion": confianza_penalizacion,
+    }
 
 
 def calcular_value(prob, cuota):
@@ -2404,9 +2694,27 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
 
         matriz = matriz_probabilidades(lam_local, lam_visitante)
 
-        prob_local, prob_empate, prob_visitante = calcular_1x2(matriz)
+        prob_local_base, prob_empate_base, prob_visitante_base = calcular_1x2(matriz)
+        probs_ajustadas, meta_ajuste_1x2 = calibrar_probabilidades_1x2(
+            row,
+            prob_local_base,
+            prob_empate_base,
+            prob_visitante_base,
+        )
+        probs_auditadas, meta_auditoria_pred = auditar_prediccion(
+            row,
+            {"local": prob_local_base, "empate": prob_empate_base, "visitante": prob_visitante_base},
+            probs_ajustadas,
+            meta_ajuste_1x2,
+        )
+        prob_local = probs_auditadas["local"]
+        prob_empate = probs_auditadas["empate"]
+        prob_visitante = probs_auditadas["visitante"]
         over, under = calcular_over_under(matriz)
         mercados_extra = calcular_mercados_adicionales(matriz)
+        mercados_extra["local_empate"] = prob_local + prob_empate
+        mercados_extra["visitante_empate"] = prob_visitante + prob_empate
+        mercados_extra["gana_cualquiera"] = prob_local + prob_visitante
         mercados_extra, incoherencias_mercado = validar_coherencia_mercados(
             prob_local,
             prob_empate,
@@ -2515,7 +2823,11 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         value_visitante = calcular_value(prob_visitante, row["cuota_visitante"])
         value_empate = calcular_value(prob_empate, row["cuota_empate"])
 
-        confianza = calcular_confianza_ajustada(prob, mejor_edge, bonus=confianza_bonus_total)
+        confianza = calcular_confianza_ajustada(
+            prob,
+            mejor_edge,
+            bonus=confianza_bonus_total - int(meta_auditoria_pred.get("auditoria_confianza_penalizacion", 0) or 0),
+        )
         if premium_rescatable:
             confianza = max(confianza, 54)
 
@@ -2640,9 +2952,27 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             "alerta_rotacion_local": row.get("alerta_rotacion_local", False),
             "alerta_rotacion_visitante": row.get("alerta_rotacion_visitante", False),
             "partido": f"{row['local']} vs {row['visitante']}",
+            "prob_local_base": round(prob_local_base * 100, 1),
+            "prob_empate_base": round(prob_empate_base * 100, 1),
+            "prob_visitante_base": round(prob_visitante_base * 100, 1),
             "prob_local": round(prob_local * 100, 1),
             "prob_empate": round(prob_empate * 100, 1),
             "prob_visitante": round(prob_visitante * 100, 1),
+            "team_strength_local": meta_ajuste_1x2.get("team_strength_local"),
+            "team_strength_visitante": meta_ajuste_1x2.get("team_strength_visitante"),
+            "tpi_local": meta_ajuste_1x2.get("tpi_local"),
+            "tpi_visitante": meta_ajuste_1x2.get("tpi_visitante"),
+            "tpi_diff": meta_ajuste_1x2.get("tpi_diff", 0.0),
+            "ajuste_jerarquia": meta_ajuste_1x2.get("ajuste_jerarquia", ""),
+            "ajuste_tpi": meta_ajuste_1x2.get("ajuste_tpi", ""),
+            "ajuste_1x2_local_pct": meta_ajuste_1x2.get("ajuste_1x2_local_pct", 0.0),
+            "ajuste_1x2_visitante_pct": meta_ajuste_1x2.get("ajuste_1x2_visitante_pct", 0.0),
+            "motivo_ajuste_1x2": meta_ajuste_1x2.get("motivo_ajuste_1x2", ""),
+            "auditoria_alerta_prediccion": meta_auditoria_pred.get("auditoria_alerta_prediccion", False),
+            "auditoria_prediccion_alertas": meta_auditoria_pred.get("auditoria_prediccion_alertas", ""),
+            "auditoria_ajuste_aplicado": meta_auditoria_pred.get("auditoria_ajuste_aplicado", ""),
+            "auditoria_motivo": meta_auditoria_pred.get("auditoria_motivo", ""),
+            "auditoria_confianza_penalizacion": meta_auditoria_pred.get("auditoria_confianza_penalizacion", 0),
             "ganador": ganador,
             "goles": goles,
             "value_local": value_local,
