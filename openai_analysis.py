@@ -51,7 +51,7 @@ def openai_analisis_disponible():
 def _default_ai_columns(df):
     vista = df.copy()
     defaults = {
-        "veredicto_ia": "",
+        "veredicto_ia": "PENDIENTE",
         "decision_ia": "",
         "prediccion_ia": "",
         "mercado_ia": "",
@@ -73,6 +73,7 @@ def _default_ai_columns(df):
         "decision_final": "",
         "pick_final": "",
         "mercado_final": "",
+        "motivo_decision_final": "",
     }
     for col, value in defaults.items():
         if col not in vista.columns:
@@ -93,9 +94,10 @@ def _seleccionar_para_ia(df, max_partidos=12):
     vista["confianza_rank"] = vista["confianza"].fillna(0)
     vista["ventaja_rank"] = vista["ventaja_prob_pct"].fillna(0)
 
+    # Las candidatas a dinero real siempre se auditan primero.
     seleccion = vista[
         (
-            vista["decision_simple"].isin(["Apostar", "Mirar"])
+            vista["decision_simple"].eq("Apostar")
             | (vista["prioridad_rank"] >= 90)
             | (vista["ventaja_rank"] >= 12)
         )
@@ -163,6 +165,11 @@ def _build_payload_rows(df):
                 "pick_actual": row.get("pick_recomendado", ""),
                 "mercado_actual": row.get("mercado_recomendado", ""),
                 "prob_pick_actual": row.get("probabilidad_pick", 0),
+                "cuota_pick": row.get("cuota_pick"),
+                "edge_pick": row.get("edge_pick"),
+                "ev_pick": row.get("ev_pick"),
+                "riesgo_pick": row.get("riesgo_pick", row.get("riesgo_simple", "")),
+                "odds_source_pick": row.get("odds_source_pick", row.get("odds_source", "estimated")),
                 "pick_2": row.get("pick_2", ""),
                 "mercado_2": row.get("mercado_2", ""),
                 "prob_2": row.get("prob_2", 0),
@@ -228,26 +235,28 @@ def _build_payload_rows(df):
 
 def _prompt_analisis(payload):
     return (
-        "Eres un SEGUNDO ANALISTA IA y AUDITOR de un modelo de apuestas deportivas. "
-        "Tu trabajo NO es repetir los datos ni embellecer el texto. Tu trabajo es revisar primero la lectura futbolística del partido y luego la recomendación de apuesta. "
-        "Debes actuar al mismo tiempo como estadístico, scout, analista de apuestas y auditor. "
-        "Primero debes decidir si estás de acuerdo con la predicción 1X2 del modelo. Después debes decidir si estás de acuerdo con el mercado recomendado. "
+        "Eres el ANALISTA PRINCIPAL de fútbol de una aplicación de apuestas. "
+        "Tu primera responsabilidad es dar una lectura futbolística independiente: local, empate o visitante. "
+        "Usa tu conocimiento general de fútbol, jerarquía competitiva, calidad de plantel, estilo, contexto y los datos entregados. "
+        "El modelo matemático es un contraste, no el dueño de la predicción: puedes corregirlo cuando su lectura sea poco creíble. "
+        "Después revisa si el mercado recomendado es compatible con tu lectura y con las cuotas reales disponibles. "
+        "Debes actuar al mismo tiempo como scout, analista de fútbol y auditor de apuestas. "
         "Debes cuestionar sesgos de localía, sobrepeso de racha reciente, picks incoherentes con la jerarquía futbolística, mercados demasiado cómodos elegidos por inercia, "
         "y contradicciones entre el razonamiento del partido y la apuesta elegida. "
         "Analiza los partidos usando los datos entregados y tu conocimiento general de jerarquía futbolística cuando sea razonable. "
         "No inventes lesiones, cuotas ni alineaciones que no estén en los datos. "
-        "Si el motor luce equivocado, debes corregirlo. Si el motor está razonable, debes respaldarlo. "
-        "No uses frases vagas. Habla como segundo analista crítico. "
+        "Si el motor luce equivocado, corrígelo. Si es razonable, confírmalo. "
+        "No uses frases vagas: elige siempre un desenlace 1X2 salvo que de verdad sea imposible separar a los equipos. "
         "Debes hacerte cuatro preguntas antes de responder: "
         "1) ¿Estoy de acuerdo con la lectura 1X2 del modelo? "
         "2) ¿La predicción 1X2 es creíble según TPI, forma y contexto? "
         "3) ¿Los tres mercados principales son coherentes entre sí? "
         "4) ¿Existe un mercado más lógico que no aparece en el top 3 actual? "
         "La IA debe poder decir cosas como: el modelo subestima a España, el modelo sobrevalora la localía, el modelo sobrevalora la racha reciente, el modelo ignora la diferencia de jerarquía. "
-        "Si detectas incoherencia, puedes reordenar o sustituir el top 3 final. "
+        "No puedes inventar lesiones, cuotas, resultados ni EV. Tu rol es definir la lectura futbolística y aprobar, rebajar o rechazar una candidata matemática. "
         "Devuelve exclusivamente un JSON array. "
-        "Cada elemento debe tener: fixture_id, veredicto_ia, decision_ia, prediccion_ia, mercado_ia, segunda_opinion_ia, pick_top1_ia, mercado_top1_ia, pick_top2_ia, mercado_top2_ia, pick_top3_ia, mercado_top3_ia, confianza_ia, analisis_ia, claves_ia. "
-        "veredicto_ia debe ser exactamente uno de: RESPALDA, CUESTIONA, CORRIGE. "
+        "Cada elemento debe tener: fixture_id, veredicto_ia, decision_ia, prediccion_ia, mercado_ia, segunda_opinion_ia, confianza_ia, analisis_ia, claves_ia. "
+        "veredicto_ia debe ser exactamente uno de: APROBAR, REBAJAR_A_MIRAR, RECHAZAR. "
         "decision_ia debe ser exactamente uno de: Apostar, Mirar, No tocar. "
         "prediccion_ia debe ser exactamente uno de: Gana el local, Empate, Gana el visitante, Sin lado claro. "
         "mercado_ia debe ser exactamente uno de: Gana local, Gana visitante, Empate, Local o empate, Visitante o empate, Local anota 1+, Visitante anota 1+, Ambos anotan, Over 1.5, Over 2.5, Under 3.5, Under 4.5, No apostar. "
@@ -257,13 +266,14 @@ def _prompt_analisis(payload):
         "confianza_ia debe ser un entero entre 0 y 100. "
         "analisis_ia debe ser una explicación breve en español, máximo 42 palabras, enfocada en por qué confirmas, cuestionas o corriges la predicción y/o la apuesta. "
         "claves_ia debe ser una frase corta con 2 o 3 claves concretas separadas por coma. "
-        "Reglas clave: "
+        "Reglas de dinero real: "
         "1) Si el motor favorece a un local débil frente a un visitante de jerarquía claramente superior, debes cuestionarlo o corregirlo. "
         "2) Si el motor subestima a un favorito histórico, debes señalarlo. "
         "3) Si el motor se refugia en un mercado cómodo como Under 4.5 sin ser la mejor apuesta defendible, debes señalarlo. "
-        "4) Si el razonamiento sugiere una cosa y el mercado elegido otra, debes corregir el mercado. "
-        "5) No estás obligado a coincidir con el motor. "
-        "6) Solo respalda cuando la lógica del motor aguanta el escrutinio. "
+        "4) Si no hay cuota real, edge positivo y EV positivo, el veredicto debe ser RECHAZAR. "
+        "5) APROBAR solo si la lectura matemática y futbolística es coherente, el riesgo no es alto y el pick tiene sustento. "
+        "6) REBAJAR_A_MIRAR si el modelo puede ser razonable pero hay incertidumbre, contexto incompleto o discrepancia relevante. "
+        "7) RECHAZAR si hay contradicción importante, cuota no confirmada, EV/edge no validables o riesgo alto. "
         "Datos:\n"
         + json.dumps(payload, ensure_ascii=False)
     )
@@ -278,6 +288,89 @@ def _prediccion_a_lectura(prediccion):
         "Sin lado claro": "Partido muy parejo",
     }
     return mapping.get(pred, pred)
+
+
+def aplicar_filtro_dinero_real(df, auditoria_ia_disponible=False):
+    """Aplica la compuerta final: matemática valida + cuota real + auditor IA."""
+    vista = _default_ai_columns(df)
+    if vista.empty:
+        return vista
+
+    for idx, row in vista.iterrows():
+        decision_modelo = str(row.get("decision_modelo") or row.get("decision_simple") or "No tocar")
+        pick_modelo = str(row.get("pick_modelo") or row.get("pick_recomendado") or "")
+        mercado_modelo = str(row.get("mercado_modelo") or row.get("mercado_recomendado") or "")
+        fuente = str(row.get("odds_source_pick") or row.get("odds_source") or "estimated").lower()
+        try:
+            edge = float(row.get("edge_pick") or 0.0)
+            ev = float(row.get("ev_pick") or 0.0)
+        except (TypeError, ValueError):
+            edge, ev = 0.0, 0.0
+        riesgo = str(row.get("riesgo_simple") or row.get("riesgo_pick") or "Riesgo alto")
+        veredicto = str(row.get("veredicto_ia") or "PENDIENTE").upper()
+        cuota = float(row.get("cuota_pick") or 0.0)
+        entrada_especulativa = (
+            fuente == "real"
+            and riesgo == "Riesgo alto"
+            and cuota >= 1.80
+            and edge >= 6.0
+            and ev >= 10.0
+        )
+
+        vista.at[idx, "decision_modelo"] = decision_modelo
+        vista.at[idx, "pick_modelo"] = pick_modelo
+        vista.at[idx, "mercado_modelo"] = mercado_modelo
+
+        motivo = ""
+        final = decision_modelo
+        if fuente != "real":
+            final = "No tocar"
+            motivo = "Sin cuota real confirmada, no apto para dinero real."
+        elif edge <= 0 or ev <= 0:
+            final = "No tocar"
+            motivo = "El pick no tiene edge y EV positivos verificables."
+        elif riesgo == "Riesgo alto" and not entrada_especulativa:
+            final = "No tocar"
+            motivo = "Riesgo alto: no apto para dinero real."
+        elif decision_modelo != "Apostar" and not entrada_especulativa:
+            final = "Mirar" if decision_modelo == "Mirar" else "No tocar"
+            motivo = "El filtro matemático no aprobó la apuesta para dinero real."
+        elif not auditoria_ia_disponible or veredicto in {"", "PENDIENTE"}:
+            final = "Apostar"
+            motivo = (
+                "Entrada especulativa con valor real: stake bajo por riesgo alto."
+                if entrada_especulativa
+                else "Modelo matemático aprueba; auditor IA no disponible."
+            )
+        elif veredicto == "APROBAR":
+            final = "Apostar"
+            motivo = "Modelo matemático y auditor IA aprueban la apuesta."
+        elif veredicto == "REBAJAR_A_MIRAR":
+            final = "Mirar"
+            motivo = "El auditor IA detectó incertidumbre y rebajó la entrada."
+        else:
+            final = "No tocar"
+            motivo = "El auditor IA rechazó la entrada para dinero real."
+
+        vista.at[idx, "decision_simple"] = final
+        vista.at[idx, "decision_final"] = final
+        vista.at[idx, "pick_final"] = pick_modelo
+        vista.at[idx, "mercado_final"] = mercado_modelo
+        vista.at[idx, "motivo_decision_final"] = motivo
+        if final == "Apostar":
+            vista.at[idx, "disciplina_simple"] = "Apuesta pequeña"
+            if entrada_especulativa:
+                vista.at[idx, "stake"] = "🟡 MUY BAJO (0.5-1%)"
+                vista.at[idx, "stake_num"] = 1
+            elif str(row.get("stake") or "").upper() in {"", "❌ NO APOSTAR", "NO APOSTAR"}:
+                vista.at[idx, "stake"] = "🟢 BAJO (1-2%)"
+                vista.at[idx, "stake_num"] = 2
+        elif final == "Mirar":
+            vista.at[idx, "disciplina_simple"] = "Solo seguimiento"
+        else:
+            vista.at[idx, "disciplina_simple"] = "No tocar"
+
+    return vista
 
 
 def analizar_partidos_con_openai(df, max_partidos=12):
@@ -318,8 +411,14 @@ def analizar_partidos_con_openai(df, max_partidos=12):
         fixture_id = str(item.get("fixture_id", "")).strip()
         if not fixture_id:
             continue
+        veredicto_raw = str(item.get("veredicto_ia", "")).strip().upper()
+        veredicto_ia = {
+            "RESPALDA": "APROBAR",
+            "CUESTIONA": "REBAJAR_A_MIRAR",
+            "CORRIGE": "RECHAZAR",
+        }.get(veredicto_raw, veredicto_raw if veredicto_raw in {"APROBAR", "REBAJAR_A_MIRAR", "RECHAZAR"} else "RECHAZAR")
         ai_map[fixture_id] = {
-            "veredicto_ia": str(item.get("veredicto_ia", "")).strip(),
+            "veredicto_ia": veredicto_ia,
             "decision_ia": str(item.get("decision_ia", "")).strip(),
             "prediccion_ia": str(item.get("prediccion_ia", "")).strip(),
             "mercado_ia": str(item.get("mercado_ia", "")).strip(),
@@ -338,39 +437,6 @@ def analizar_partidos_con_openai(df, max_partidos=12):
     if not ai_map:
         return vista
 
-    def _aplicar_top3_auditor(idx):
-        for pos in range(1, 4):
-            audit_pick = str(vista.at[idx, f"pick_top{pos}_ia"] or "").strip()
-            audit_market = str(vista.at[idx, f"mercado_top{pos}_ia"] or "").strip()
-            if not audit_pick or not audit_market:
-                continue
-            mapping = AUDIT_MARKET_TO_FIELDS.get((audit_pick.replace("Local anota al menos 1", "Local anota 1+").replace("Visitante anota al menos 1", "Visitante anota 1+"), audit_market))
-            if not mapping:
-                reverse = {
-                    "Gana el local": ("Gana local", "1X2"),
-                    "Gana el visitante": ("Gana visitante", "1X2"),
-                    "Empate": ("Empate", "1X2"),
-                    "Local o empate": ("Local o empate", "Doble oportunidad"),
-                    "Visitante o empate": ("Visitante o empate", "Doble oportunidad"),
-                    "Local anota al menos 1": ("Local anota 1+", "Equipo marca"),
-                    "Visitante anota al menos 1": ("Visitante anota 1+", "Equipo marca"),
-                    "Ambos anotan": ("Ambos anotan", "BTTS"),
-                    "Más de 1.5 goles": ("Over 1.5", "Over 1.5"),
-                    "Más de 2.5 goles": ("Over 2.5", "Over 2.5"),
-                    "Menos de 3.5 goles": ("Under 3.5", "Under 3.5"),
-                    "Menos de 4.5 goles": ("Under 4.5", "Under 4.5"),
-                }
-                pair = reverse.get(audit_pick)
-                mapping = AUDIT_MARKET_TO_FIELDS.get(pair) if pair else None
-            if not mapping:
-                continue
-            canonical_pick, canonical_market, prob_field = mapping
-            vista.at[idx, f"pick_{pos}"] = canonical_pick
-            vista.at[idx, f"mercado_{pos}"] = canonical_market
-            vista.at[idx, f"prob_{pos}"] = float(vista.at[idx, prob_field] or 0)
-            vista.at[idx, f"confianza_{pos}"] = ""
-            vista.at[idx, f"riesgo_{pos}"] = ""
-
     for idx, row in vista.iterrows():
         fixture_id = str(row.get("fixture_id", "")).strip()
         if fixture_id not in ai_map:
@@ -385,78 +451,16 @@ def analizar_partidos_con_openai(df, max_partidos=12):
         vista.at[idx, "pick_modelo"] = str(row.get("pick_recomendado", "") or "")
         vista.at[idx, "mercado_modelo"] = str(row.get("mercado_recomendado", "") or "")
 
-        decision_actual = str(vista.at[idx, "decision_simple"] or "Evitar")
-        disciplina_actual = str(vista.at[idx, "disciplina_simple"] or "No tocar")
-        veredicto_ia = ai_row.get("veredicto_ia", "")
-        decision_ia = ai_row.get("decision_ia", "")
-        pred_actual = str(vista.at[idx, "prediccion_simple"] or "")
-        pred_ia = ai_row.get("prediccion_ia", "")
-        mercado_ia = str(ai_row.get("mercado_ia", "") or "").strip()
-        confianza_ia = float(ai_row.get("confianza_ia") or 0)
-        ventaja_prob = float(vista.at[idx, "ventaja_prob_pct"] or 0)
-        perfil_riesgo = str(vista.at[idx, "perfil_riesgo"] or "equilibrado").lower()
-        trampa = bool(vista.at[idx, "trampa"]) if "trampa" in vista.columns else False
-
-        if trampa:
-            continue
-
-        misma_lectura = pred_actual == pred_ia and pred_ia in {"Gana el local", "Gana el visitante", "Empate"}
-        rank_actual = AI_DECISION_RANK.get(decision_actual, 0)
-        rank_ia = AI_DECISION_RANK.get(decision_ia, 0)
-
-        if veredicto_ia in {"CORRIGE", "CUESTIONA"}:
-            _aplicar_top3_auditor(idx)
-            if str(vista.at[idx, "pick_1"] or "").strip():
-                vista.at[idx, "pick_recomendado"] = vista.at[idx, "pick_1"]
-                vista.at[idx, "mercado_recomendado"] = vista.at[idx, "mercado_1"]
-                vista.at[idx, "probabilidad_pick"] = vista.at[idx, "prob_1"]
-
-        if veredicto_ia == "CORRIGE" and confianza_ia >= 70:
-            if pred_ia:
-                vista.at[idx, "prediccion_simple"] = pred_ia
-                vista.at[idx, "prediccion_partido"] = _prediccion_a_lectura(pred_ia)
-            if mercado_ia and mercado_ia != "No apostar":
-                vista.at[idx, "mercado_recomendado"] = mercado_ia
-                vista.at[idx, "pick_recomendado"] = mercado_ia
-            vista.at[idx, "decision_simple"] = decision_ia or decision_actual
-            if decision_ia == "Apostar":
-                vista.at[idx, "disciplina_simple"] = "Apuesta pequeña" if confianza_ia < 80 else "Apuesta fuerte"
-                vista.at[idx, "riesgo_simple"] = "Riesgo medio" if confianza_ia < 80 else "Riesgo controlado"
-            elif decision_ia == "Mirar":
-                vista.at[idx, "disciplina_simple"] = "Entrada pequeña" if perfil_riesgo == "agresivo" else "Solo seguimiento"
-                vista.at[idx, "riesgo_simple"] = "Riesgo medio"
-            else:
-                vista.at[idx, "disciplina_simple"] = "No tocar"
-                vista.at[idx, "riesgo_simple"] = "Riesgo alto"
-        elif veredicto_ia == "CUESTIONA" and confianza_ia >= 66:
-            if decision_actual == "Apostar":
-                vista.at[idx, "decision_simple"] = "Mirar"
-                vista.at[idx, "disciplina_simple"] = "Solo seguimiento"
-                vista.at[idx, "riesgo_simple"] = "Riesgo medio"
-            elif decision_actual == "Mirar" and rank_ia == 0:
-                vista.at[idx, "disciplina_simple"] = "No tocar"
-                vista.at[idx, "riesgo_simple"] = "Riesgo alto"
-        elif (
-            veredicto_ia == "RESPALDA" and
-            decision_ia == "Apostar" and
-            confianza_ia >= (58 if perfil_riesgo == "agresivo" else 62) and
-            (misma_lectura or perfil_riesgo == "agresivo")
-        ):
-            vista.at[idx, "decision_simple"] = "Apostar"
-            vista.at[idx, "disciplina_simple"] = "Apuesta pequeña" if confianza_ia < 80 else "Apuesta fuerte"
-            vista.at[idx, "riesgo_simple"] = "Riesgo medio" if confianza_ia < 80 else "Riesgo controlado"
-
-        analisis_ia = ai_row.get("analisis_ia", "")
-        claves_ia = ai_row.get("claves_ia", "")
-        if analisis_ia:
-            vista.at[idx, "analisis_ia"] = analisis_ia
-        if claves_ia:
-            vista.at[idx, "claves_ia"] = claves_ia
-
-        pred_final = str(vista.at[idx, "prediccion_partido"] or "") or _prediccion_a_lectura(pred_ia or pred_actual)
+        # La IA es la lectura futbolística principal; el modelo conserva el
+        # control de probabilidades, cuotas, EV y gestión de riesgo.
+        prediccion_ia = str(ai_row.get("prediccion_ia", "") or "").strip()
+        if prediccion_ia in {"Gana el local", "Gana el visitante", "Empate", "Sin lado claro"}:
+            pred_final = _prediccion_a_lectura(prediccion_ia)
+        else:
+            pred_final = str(vista.at[idx, "prediccion_partido"] or "")
         vista.at[idx, "prediccion_final"] = pred_final
-        vista.at[idx, "decision_final"] = str(vista.at[idx, "decision_simple"] or decision_actual)
+        vista.at[idx, "decision_final"] = str(vista.at[idx, "decision_simple"] or "No tocar")
         vista.at[idx, "pick_final"] = str(vista.at[idx, "pick_recomendado"] or "")
         vista.at[idx, "mercado_final"] = str(vista.at[idx, "mercado_recomendado"] or "")
 
-    return vista
+    return aplicar_filtro_dinero_real(vista, auditoria_ia_disponible=True)
