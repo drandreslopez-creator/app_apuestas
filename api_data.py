@@ -227,6 +227,33 @@ def _enriquecer_odds_desde_cache(df_partidos):
     return df_result
 
 
+def _enriquecer_odds_desde_catalogo(df_partidos):
+    """Añade cuotas verificadas al respaldo ESPN cuando el catálogo las cubre.
+
+    ESPN es útil para fixtures, pero no siempre expone una casa de apuestas. El
+    catálogo secundario se consulta una vez y ``get_odds`` hace el cruce local,
+    de modo que no se inventan cuotas cuando un partido no está disponible.
+    """
+    if df_partidos is None or df_partidos.empty:
+        return df_partidos
+
+    df_result = df_partidos.copy()
+    for idx, row in df_result.iterrows():
+        fuente_actual = str(row.get("fuente_cuotas") or "").strip()
+        if fuente_actual in {"the_odds_api", "api_football_odds", "api_football_odds_live"}:
+            continue
+        odds = get_odds(str(row.get("local") or ""), str(row.get("visitante") or ""))
+        if not odds:
+            continue
+        df_result.at[idx, "cuota_local"] = odds.get("cuota_local")
+        df_result.at[idx, "cuota_empate"] = odds.get("cuota_empate")
+        df_result.at[idx, "cuota_visitante"] = odds.get("cuota_visitante")
+        df_result.at[idx, "fuente_cuotas"] = "the_odds_api"
+        df_result.at[idx, "market_match_score"] = float(odds.get("market_match_score", 0.0) or 0.0)
+        df_result.at[idx, "bookmaker_count"] = int(odds.get("bookmaker_count", 0) or 0)
+    return df_result
+
+
 def _american_to_decimal(odds_value):
     if odds_value in (None, ""):
         return None
@@ -1498,6 +1525,7 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
         if api_suspendida:
             df_espn, espn_errors = _fetch_matches_espn(fecha=fecha, limit=limit)
             if not df_espn.empty:
+                df_espn = _enriquecer_odds_desde_catalogo(df_espn)
                 df_espn = _enriquecer_odds_desde_cache(df_espn)
                 _guardar_cache_partidos(df_espn)
                 _set_last_api_status(
@@ -1520,7 +1548,9 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
 
         df_espn, espn_errors = _fetch_matches_espn(fecha=fecha, limit=limit)
         if not df_espn.empty:
+            df_espn = _enriquecer_odds_desde_catalogo(df_espn)
             df_espn = _enriquecer_odds_desde_cache(df_espn)
+            df_espn = _enriquecer_odds_desde_catalogo(df_espn)
             _guardar_cache_partidos(df_espn)
             _set_last_api_status(
                 True,
