@@ -11,7 +11,11 @@ from tracker import (
 )
 from model import analizar_partidos
 from api_data import get_matches_api, get_last_api_status
-from openai_analysis import analizar_partidos_con_openai, openai_analisis_disponible
+from openai_analysis import (
+    analizar_partidos_con_openai,
+    aplicar_filtro_dinero_real,
+    openai_analisis_disponible,
+)
 
 VENTANA_PARTIDOS = "hoy y próximos 2 días"
 DECISION_ORDEN = {"Apostar": 0, "Mirar": 1, "No tocar": 2, "Evitar": 2}
@@ -203,6 +207,8 @@ def preparar_resultados_ui(df):
         "decision_final": "",
         "pick_final": "",
         "mercado_final": "",
+        "motivo_decision_final": "",
+        "stake": "No apostar",
         "prioridad_liga": 0,
     }
 
@@ -423,6 +429,7 @@ def render_partido(row):
     segunda_opinion_ia = str(row.get("segunda_opinion_ia", "") or "").strip()
     veredicto_ia = str(row.get("veredicto_ia", "") or "").strip()
     decision_ia = str(row.get("decision_ia", "") or "").strip()
+    motivo_decision_final = str(row.get("motivo_decision_final", "") or "").strip()
     mercado_ia = str(row.get("mercado_ia", "") or "").strip()
     claves_ia = str(row.get("claves_ia", "") or "").strip()
     prediccion_modelo = row.get("prediccion_modelo") or row.get("prediccion_partido") or row.get("prediccion_simple", "Partido para mirar")
@@ -461,6 +468,7 @@ def render_partido(row):
     odds_source_pick = str(row.get("odds_source_pick", "estimated") or "estimated").strip()
     alerta_cuota = str(row.get("alerta_cuota", "") or "").strip()
     score_final = row.get("score_final", 0.0)
+    stake = str(row.get("stake", "No apostar") or "No apostar")
     justificacion_ranking = str(row.get("justificacion_ranking", "") or "").strip()
     mercado_observado = str(row.get("mercado_observado", "") or "").strip()
     pick_observado = str(row.get("pick_observado", "") or "").strip()
@@ -540,6 +548,10 @@ def render_partido(row):
     with top2:
         st.markdown(badge_decision(row.get("decision_simple", "Mirar")), unsafe_allow_html=True)
         st.markdown(
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:6px;'><b>Veredicto IA:</b> {veredicto_ia or 'PENDIENTE'}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
             f"<div style='font-size:10px;color:{COLOR_TEXT_SOFT};margin-top:8px;'><b>Predicción del partido</b></div>",
             unsafe_allow_html=True,
         )
@@ -568,6 +580,10 @@ def render_partido(row):
             unsafe_allow_html=True,
         )
         st.markdown(
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'><b>Stake sugerido:</b> {stake if row.get('decision_simple') == 'Apostar' else 'No apostar'}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
             f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'>Prob. estimada: <b>{_fmt_pct(probabilidad_pick)}</b> · Confianza: <b>{confianza_pick or 'Evitar'}</b></div>"
             + (
                 f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'>Cuota: <b>{_fmt_num(cuota_pick)}</b> · Edge: <b>{_fmt_pct(edge_pick if not sin_valor_real else None)}</b> · EV: <b>{_fmt_pct(ev_pick if not sin_valor_real else None)}</b></div>"
@@ -579,6 +595,11 @@ def render_partido(row):
         if alerta_cuota and not sin_valor_real:
             st.markdown(
                 f"<div style='font-size:11px;color:#ffb4a2;margin-top:4px;'><b>{alerta_cuota}</b></div>",
+                unsafe_allow_html=True,
+            )
+        if motivo_decision_final:
+            st.markdown(
+                f"<div style='font-size:11px;color:{COLOR_TEXT_SOFT};margin-top:4px;'><b>Decisión final:</b> {motivo_decision_final}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -757,12 +778,19 @@ def render_dashboard():
     sincronizar_historial_automatico()
     calibracion = cargar_calibracion_modelo()
     resultados = preparar_resultados_ui(cargar_resultados(df, calibracion, perfil_riesgo))
-    if openai_analisis_disponible():
+    auditoria_ia_activa = openai_analisis_disponible()
+    if auditoria_ia_activa:
         resultados = preparar_resultados_ui(cargar_resultados_openai(resultados))
+    resultados = preparar_resultados_ui(
+        aplicar_filtro_dinero_real(resultados, auditoria_ia_disponible=auditoria_ia_activa)
+    )
     stats_historial = cargar_resumen_historial()
 
     if guardar_picks_btn:
-        picks_guardables = resultados[resultados["ganador"] != "No bet"].copy()
+        picks_guardables = resultados[
+            resultados["decision_simple"].eq("Apostar")
+            & resultados["odds_source_pick"].eq("real")
+        ].copy()
         if picks_guardables.empty:
             st.info("Hoy no hay picks suficientemente claros para guardar.")
         else:
