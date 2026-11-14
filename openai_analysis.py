@@ -44,6 +44,24 @@ def _get_openai_api_key():
     return None
 
 
+def _get_openai_model():
+    """Read the model setting from either local env vars or Streamlit secrets."""
+    model = os.getenv("OPENAI_ANALYSIS_MODEL")
+    if model:
+        return model
+
+    try:
+        import streamlit as st
+
+        secret_model = st.secrets.get("OPENAI_ANALYSIS_MODEL")
+        if secret_model:
+            return secret_model
+    except Exception:
+        pass
+
+    return "gpt-5-mini"
+
+
 def openai_analisis_disponible():
     return OpenAI is not None and bool(_get_openai_api_key())
 
@@ -389,7 +407,7 @@ def analizar_partidos_con_openai(df, max_partidos=12):
 
     payload = _build_payload_rows(subset)
     client = OpenAI(api_key=api_key)
-    model_name = os.getenv("OPENAI_ANALYSIS_MODEL", "gpt-5.5")
+    model_name = _get_openai_model()
 
     try:
         response = client.responses.create(
