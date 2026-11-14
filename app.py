@@ -21,6 +21,7 @@ VENTANA_PARTIDOS = "hoy y próximos 2 días"
 DECISION_ORDEN = {"Apostar": 0, "Mirar": 1, "No tocar": 2, "Evitar": 2}
 LIVE_REFRESH_INTERVAL = "45s"
 AUTO_HISTORY_SYNC_MINUTES = 20
+AUTO_PREDICTION_CAPTURE_MINUTES = 30
 COLOR_TEXT_MAIN = "var(--text-color)"
 COLOR_TEXT_MUTED = "color-mix(in srgb, var(--text-color) 64%, transparent)"
 COLOR_TEXT_SOFT = "color-mix(in srgb, var(--text-color) 52%, transparent)"
@@ -69,6 +70,23 @@ def sincronizar_historial_automatico():
         cargar_resumen_historial.clear()
         cargar_calibracion_modelo.clear()
     return actualizado
+
+
+def registrar_predicciones_automaticamente(resultados):
+    """Persist the first pre-match read so it can be evaluated after full time."""
+    ahora = datetime.now()
+    ultima = st.session_state.get("predicciones_auto_guardadas_at")
+    if ultima and (ahora - ultima) < timedelta(minutes=AUTO_PREDICTION_CAPTURE_MINUTES):
+        return False
+
+    estados_prepartido = {"NS", "TBD", "PST"}
+    predicciones_validas = {"Gana el local", "Gana el visitante", "Empate"}
+    candidatas = resultados[
+        resultados["estado_partido"].isin(estados_prepartido)
+        & resultados["prediccion_simple"].isin(predicciones_validas)
+    ].copy()
+    st.session_state["predicciones_auto_guardadas_at"] = ahora
+    return guardar_resultado(candidatas) if not candidatas.empty else False
 
 
 def badge_decision(decision):
@@ -762,7 +780,7 @@ def render_dashboard():
     with top_controls[0]:
         actualizar_historial_btn = st.button("Actualizar historial")
     with top_controls[1]:
-        guardar_picks_btn = st.button("Guardar picks")
+        guardar_picks_btn = st.button("Guardar análisis")
     perfil_visible = "Agresivo"
     perfil_riesgo = "agresivo"
 
@@ -790,23 +808,28 @@ def render_dashboard():
     resultados = preparar_resultados_ui(
         aplicar_filtro_dinero_real(resultados, auditoria_ia_disponible=auditoria_ia_activa)
     )
+    if registrar_predicciones_automaticamente(resultados):
+        cargar_resumen_historial.clear()
+        cargar_calibracion_modelo.clear()
     stats_historial = cargar_resumen_historial()
 
     if guardar_picks_btn:
+        estados_prepartido = {"NS", "TBD", "PST"}
+        predicciones_validas = {"Gana el local", "Gana el visitante", "Empate"}
         picks_guardables = resultados[
-            resultados["decision_simple"].eq("Apostar")
-            & resultados["odds_source_pick"].eq("real")
+            resultados["estado_partido"].isin(estados_prepartido)
+            & resultados["prediccion_simple"].isin(predicciones_validas)
         ].copy()
         if picks_guardables.empty:
-            st.info("Hoy no hay picks suficientemente claros para guardar.")
+            st.info("Hoy no hay lecturas prepartido suficientes para guardar.")
         else:
             changed = guardar_resultado(picks_guardables)
             cargar_resumen_historial.clear()
             cargar_calibracion_modelo.clear()
             if changed:
-                st.success("Picks del día guardados.")
+                st.success("Análisis prepartido guardados para aprendizaje.")
             else:
-                st.info("No hubo cambios nuevos para guardar.")
+                st.info("Estos análisis ya estaban guardados para aprendizaje.")
 
     _, total = calcular_roi()
     en_vivo = int(resultados["estado_partido"].isin(["LIVE", "HT", "1H", "2H"]).sum()) if "estado_partido" in resultados.columns else 0
