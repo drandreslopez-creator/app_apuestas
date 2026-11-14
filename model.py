@@ -2536,19 +2536,26 @@ def asesor_apuesta(row_dict):
             continue
         if edge <= 0 or ev <= 0:
             continue
-        if riesgo == "Riesgo alto" and not (ev >= 10 and cuota >= 1.60):
+        entrada_agresiva = (
+            perfil == "agresivo"
+            and riesgo == "Riesgo alto"
+            and prob >= 50
+            and ev >= 6
+            and cuota >= 1.55
+        )
+        if riesgo == "Riesgo alto" and not (ev >= 10 and cuota >= 1.60) and not entrada_agresiva:
             continue
         candidatos_filtrados.append(cand)
     candidatos = candidatos_filtrados
     if not candidatos:
         return {
-            "pick_recomendado": "No hay picks con valor real",
-            "mercado_recomendado": "Sin valor real",
-            "probabilidad_pick": None,
-            "confianza_pick": "Evitar",
-            "claves_pick": "ningún mercado supera los filtros mínimos de valor, edge y riesgo",
-            "accion_pick": "No tocar",
-            "riesgo_pick": "Riesgo alto",
+            "pick_recomendado": prediccion if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else "No hay picks con valor real",
+            "mercado_recomendado": "Lectura 1X2" if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else "Sin valor real",
+            "probabilidad_pick": round(prob_top, 1) if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else None,
+            "confianza_pick": "Media" if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else "Evitar",
+            "claves_pick": "lectura 1X2 con ventaja limitada; falta cuota real para validar valor" if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else "ningún mercado supera los filtros mínimos de valor, edge y riesgo",
+            "accion_pick": "Mirar" if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else "No tocar",
+            "riesgo_pick": "Riesgo medio" if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else "Riesgo alto",
             "valor_pick": 0.0,
             "cuota_pick": None,
             "edge_pick": 0.0,
@@ -2560,7 +2567,7 @@ def asesor_apuesta(row_dict):
             "justificacion_ranking": "No hay picks con valor real",
             "mercado_observado": mejor_observado.get("mercado", "") if mejor_observado else "",
             "pick_observado": mejor_observado.get("pick", "") if mejor_observado else "",
-            "motivo_descarte": "Ningún mercado supera los filtros mínimos de probabilidad, cuota, edge, EV y riesgo.",
+            "motivo_descarte": "Lectura disponible, pero sin cuota real no se puede validar edge ni EV." if prediccion != "Empate" and prob_top >= 44 and ventaja >= 4 else "Ningún mercado supera los filtros mínimos de probabilidad, cuota, edge, EV y riesgo.",
             "top_picks": [],
         }
 
@@ -2586,10 +2593,17 @@ def asesor_apuesta(row_dict):
         cand["confianza"] = confianza_desde_prob(cand["prob"])
         cand["riesgo"] = riesgo_desde_prob(cand["prob"], cand.get("coherencia_futbolistica", 50))
     mejor = candidatos[0]
+    umbral_apostar = {"conservador": 72, "equilibrado": 67, "agresivo": 62}.get(perfil, 67)
+    entrada_agresiva = (
+        perfil == "agresivo"
+        and mejor["riesgo"] == "Riesgo alto"
+        and float(mejor.get("ev_pct") or 0.0) >= 6
+        and float(mejor.get("cuota") or 0.0) >= 1.55
+    )
     if (
-        mejor["prob"] >= 70
+        mejor["prob"] >= umbral_apostar
         and confianza_desde_prob(mejor["prob"]) in {"Muy alta", "Alta", "Media-alta"}
-        and mejor["riesgo"] != "Riesgo alto"
+        and (mejor["riesgo"] != "Riesgo alto" or entrada_agresiva)
         and mejor["coherencia_futbolistica"] >= 58
         and float(mejor.get("ev_pct") or 0.0) > 0
         and float(mejor.get("edge_pct") or 0.0) > 0
