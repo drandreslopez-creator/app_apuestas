@@ -212,14 +212,20 @@ def preparar_resultados_ui(df):
         "prioridad_liga": 0,
     }
 
+    # Add missing UI fields in one operation to avoid fragmented DataFrames.
+    missing = {col: value for col, value in defaults.items() if col not in vista.columns}
+    if missing:
+        vista = pd.concat(
+            [vista, pd.DataFrame({col: [value] * len(vista) for col, value in missing.items()}, index=vista.index)],
+            axis=1,
+        )
     for col, value in defaults.items():
-        if col not in vista.columns:
-            vista[col] = value
+        if col in missing:
+            continue
+        if value is None:
+            vista[col] = vista[col].where(vista[col].notna(), None)
         else:
-            if value is None:
-                vista[col] = vista[col].where(vista[col].notna(), None)
-            else:
-                vista[col] = vista[col].fillna(value)
+            vista[col] = vista[col].fillna(value)
 
     vista["decision_rank"] = vista["decision_simple"].map(DECISION_ORDEN).fillna(9).astype(int)
     vista["prioridad_liga"] = vista["prioridad_liga"].fillna(0)
@@ -844,7 +850,9 @@ def render_dashboard():
         st.metric("Mercados corregidos", audit_markets)
 
     if openai_analisis_disponible():
-        st.caption("Socio analista IA activo como apoyo extra.")
+        st.caption("Socio analista IA externo activo como apoyo extra.")
+    else:
+        st.caption("Motor experto local activo. El analista IA externo es opcional.")
 
     tab1, tab2 = st.tabs(["Partidos por liga", "Historial"])
 
