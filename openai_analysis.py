@@ -362,8 +362,16 @@ def aplicar_filtro_dinero_real(df, auditoria_ia_disponible=False):
         motivo = ""
         final = decision_modelo
         if fuente != "real":
-            final = "No tocar"
-            motivo = "Sin cuota real confirmada, no apto para dinero real."
+            # A missing price invalidates a cash bet, not the football read.
+            # Keep a useful "Mirar" signal so the user can contrast it with
+            # a real quote at their bookmaker instead of seeing every match
+            # as a blanket rejection.
+            final = "Mirar" if decision_modelo in {"Apostar", "Mirar"} and pick_modelo else "No tocar"
+            motivo = (
+                "Lectura deportiva disponible; confirma una cuota real antes de apostar."
+                if final == "Mirar"
+                else "Sin cuota real confirmada y sin lectura suficiente para recomendar seguimiento."
+            )
         elif edge <= 0 or ev <= 0:
             final = "No tocar"
             motivo = "El pick no tiene edge y EV positivos verificables."
