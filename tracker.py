@@ -45,6 +45,11 @@ COLUMNAS_HISTORIAL = [
     "prediccion_simple",
     "decision_simple",
     "razon_simple",
+    "pick_recomendado",
+    "mercado_recomendado",
+    "probabilidad_pick",
+    "riesgo_pick",
+    "odds_source_pick",
 ]
 
 ESTADOS_EN_VIVO = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
@@ -170,7 +175,12 @@ def init_storage():
                 fuente_partidos TEXT,
                 prediccion_simple TEXT,
                 decision_simple TEXT,
-                razon_simple TEXT
+                razon_simple TEXT,
+                pick_recomendado TEXT,
+                mercado_recomendado TEXT,
+                probabilidad_pick REAL,
+                riesgo_pick TEXT,
+                odds_source_pick TEXT
             )
             """
         )
@@ -193,6 +203,11 @@ def init_storage():
             "razon_simple": "TEXT",
             "fecha_cierre_resultado": "TEXT",
             "estado_final_consulta": "TEXT",
+            "pick_recomendado": "TEXT",
+            "mercado_recomendado": "TEXT",
+            "probabilidad_pick": "REAL",
+            "riesgo_pick": "TEXT",
+            "odds_source_pick": "TEXT",
         }
         for columna, tipo in columnas_requeridas.items():
             if columna not in columnas_actuales:
@@ -209,7 +224,7 @@ def init_storage():
                 pass
 
 
-def _upsert_historial(df, conn=None):
+def _upsert_historial(df, conn=None, preservar_snapshot=False):
     df_guardar = _asegurar_columnas(df)
     if df_guardar.empty:
         return False
@@ -223,6 +238,16 @@ def _upsert_historial(df, conn=None):
         conn = _get_connection()
         close_conn = True
 
+    if preservar_snapshot:
+        existentes = {
+            row[0] for row in conn.execute("SELECT unique_key FROM historial").fetchall()
+        }
+        df_guardar = df_guardar[~df_guardar["unique_key"].isin(existentes)].copy()
+        if df_guardar.empty:
+            if close_conn:
+                conn.close()
+            return False
+
     before = conn.execute("SELECT COUNT(*) FROM historial").fetchone()[0]
     conn.executemany(
         """
@@ -233,7 +258,8 @@ def _upsert_historial(df, conn=None):
             prob_local, prob_empate, prob_visitante, ai_score, ai_decision, ai_resumen, mejor_edge_pct, ev_por_unidad, banda_confianza, banda_edge,
             cuota_local, cuota_empate, cuota_visitante,
             stake, stake_num, fecha_guardado, resultado_real, fecha_cierre_resultado, estado_final_consulta, fuente_partidos
-            , prediccion_simple, decision_simple, razon_simple
+            , prediccion_simple, decision_simple, razon_simple,
+            pick_recomendado, mercado_recomendado, probabilidad_pick, riesgo_pick, odds_source_pick
         ) VALUES (
             :unique_key, :fixture_id, :fecha_partido, :hora_partido, :liga, :grupo_liga, :partido,
             :ganador, :mercado, :confianza, :estado_partido, :fuente_cuotas,
@@ -241,7 +267,8 @@ def _upsert_historial(df, conn=None):
             :prob_local, :prob_empate, :prob_visitante, :ai_score, :ai_decision, :ai_resumen, :mejor_edge_pct, :ev_por_unidad, :banda_confianza, :banda_edge,
             :cuota_local, :cuota_empate, :cuota_visitante,
             :stake, :stake_num, :fecha_guardado, :resultado_real, :fecha_cierre_resultado, :estado_final_consulta, :fuente_partidos,
-            :prediccion_simple, :decision_simple, :razon_simple
+            :prediccion_simple, :decision_simple, :razon_simple,
+            :pick_recomendado, :mercado_recomendado, :probabilidad_pick, :riesgo_pick, :odds_source_pick
         )
         ON CONFLICT(unique_key) DO UPDATE SET
             fixture_id=excluded.fixture_id,
@@ -280,7 +307,12 @@ def _upsert_historial(df, conn=None):
             fuente_partidos=excluded.fuente_partidos,
             prediccion_simple=excluded.prediccion_simple,
             decision_simple=excluded.decision_simple,
-            razon_simple=excluded.razon_simple
+            razon_simple=excluded.razon_simple,
+            pick_recomendado=excluded.pick_recomendado,
+            mercado_recomendado=excluded.mercado_recomendado,
+            probabilidad_pick=excluded.probabilidad_pick,
+            riesgo_pick=excluded.riesgo_pick,
+            odds_source_pick=excluded.odds_source_pick
         """,
         df_guardar.to_dict(orient="records")
     )
@@ -296,7 +328,9 @@ def _upsert_historial(df, conn=None):
 
 def guardar_resultado(df):
     init_storage()
-    return _upsert_historial(df)
+    # The first pre-match read is immutable: later refreshes must not rewrite
+    # the evidence used to evaluate the prediction.
+    return _upsert_historial(df, preservar_snapshot=True)
 
 
 # ================================
@@ -409,7 +443,7 @@ def actualizar_resultados():
         return False
 
     df_actualizar = _asegurar_columnas(df)
-    return _upsert_historial(df_actualizar)
+    return _upsert_historial(df_actualizar, preservar_snapshot=False)
 
 
 # ================================
@@ -420,6 +454,8 @@ def calcular_roi():
     df = cargar_historial()
 
     df = df.dropna(subset=["resultado_real"])
+    if "es_apuesta_real" in df.columns:
+        df = df[df["es_apuesta_real"]]
 
     if df.empty:
         return 0, 0
@@ -469,6 +505,9 @@ def calcular_roi():
 
 def calcular_profit_fila(row):
 
+    if not _es_apuesta_real(row):
+        return 0.0
+
     stake_raw = row.get("stake_num", 1)
 
     try:
@@ -497,6 +536,27 @@ def calcular_profit_fila(row):
     return round(-stake, 2)
 
 
+def _es_apuesta_real(row):
+    return (
+        str(row.get("decision_simple") or "").strip() == "Apostar"
+        and str(row.get("odds_source_pick") or "").strip().lower() == "real"
+    )
+
+
+def _resultado_prediccion(row):
+    if pd.isna(row.get("resultado_real")):
+        return "Pendiente"
+    pred_map = {
+        "Gana el local": "Gana local",
+        "Gana el visitante": "Gana visitante",
+        "Empate": "Empate",
+    }
+    prediccion = pred_map.get(str(row.get("prediccion_simple") or "").strip())
+    if not prediccion:
+        return "Sin lectura"
+    return "Acierto" if prediccion == row.get("resultado_real") else "Fallo"
+
+
 def cargar_historial():
     init_storage()
 
@@ -518,14 +578,14 @@ def cargar_historial():
         df["fecha_partido"] = pd.to_datetime(df["fecha_partido"], errors="coerce")
 
     if "resultado_real" in df.columns:
+        df["es_apuesta_real"] = df.apply(_es_apuesta_real, axis=1)
+        df["estado_prediccion"] = df.apply(_resultado_prediccion, axis=1)
         df["estado_pick"] = df.apply(
-            lambda row: (
-                "Pendiente" if pd.isna(row.get("resultado_real"))
-                else "Acierto" if row["ganador"] == row["resultado_real"]
-                else "Fallo"
-            ),
-            axis=1
+            lambda row: row["estado_prediccion"] if row["es_apuesta_real"] else "Seguimiento",
+            axis=1,
         )
+        stake_num = pd.to_numeric(df.get("stake_num", 0), errors="coerce").fillna(0)
+        df["stake_contable"] = stake_num.where(df["es_apuesta_real"], 0.0)
         df["profit"] = df.apply(calcular_profit_fila, axis=1)
 
     if "estado_partido" in df.columns:
@@ -565,14 +625,16 @@ def _resumen_segmento(df, columna, min_muestra=3):
     if segmento_df.empty:
         return pd.DataFrame()
 
+    estado_columna = "estado_prediccion" if "estado_prediccion" in segmento_df.columns else "estado_pick"
+    stake_columna = "stake_contable" if "stake_contable" in segmento_df.columns else "stake_num"
     resumen = (
         segmento_df.groupby(columna, dropna=False)
         .agg(
             picks=("partido", "count"),
-            aciertos=("estado_pick", lambda s: int((s == "Acierto").sum())),
-            fallos=("estado_pick", lambda s: int((s == "Fallo").sum())),
+            aciertos=(estado_columna, lambda s: int((s == "Acierto").sum())),
+            fallos=(estado_columna, lambda s: int((s == "Fallo").sum())),
             profit=("profit", "sum"),
-            stake_total=("stake_num", "sum"),
+            stake_total=(stake_columna, "sum"),
         )
         .reset_index()
     )
@@ -618,8 +680,14 @@ def _calcular_metricas_globales(cerradas):
     if cerradas.empty:
         return {"hit_rate": 0.5, "roi": 0.0, "avg_profit": 0.0}
 
-    hit_rate = float((cerradas["ganador"] == cerradas["resultado_real"]).mean())
-    roi = float((cerradas["profit"].sum() / cerradas["stake_num"].replace(0, pd.NA).dropna().sum()) * 100) if cerradas["stake_num"].replace(0, pd.NA).dropna().sum() else 0.0
+    if "estado_prediccion" in cerradas.columns:
+        lecturas = cerradas[cerradas["estado_prediccion"].isin(["Acierto", "Fallo"])]
+        hit_rate = float((lecturas["estado_prediccion"] == "Acierto").mean()) if not lecturas.empty else 0.5
+    else:
+        hit_rate = float((cerradas["ganador"] == cerradas["resultado_real"]).mean())
+    stake_columna = "stake_contable" if "stake_contable" in cerradas.columns else "stake_num"
+    stakes = pd.to_numeric(cerradas[stake_columna], errors="coerce").replace(0, pd.NA).dropna()
+    roi = float((cerradas["profit"].sum() / stakes.sum()) * 100) if not stakes.empty else 0.0
     avg_profit = float(cerradas["profit"].mean()) if "profit" in cerradas.columns else 0.0
     return {"hit_rate": hit_rate, "roi": roi, "avg_profit": avg_profit}
 
@@ -752,7 +820,12 @@ def calcular_calibracion_modelo():
             "global_metrics": global_metrics,
         }
 
-    aciertos = (cerradas["ganador"] == cerradas["resultado_real"]).mean()
+    lecturas_validas = cerradas[cerradas.get("estado_prediccion", "Sin lectura").isin(["Acierto", "Fallo"])].copy()
+    aciertos = (
+        (lecturas_validas["estado_prediccion"] == "Acierto").mean()
+        if not lecturas_validas.empty
+        else 0.5
+    )
     roi, _ = calcular_roi()
 
     min_edge = 0.03
@@ -777,7 +850,7 @@ def calcular_calibracion_modelo():
         max_stake_cap = 5
 
     return {
-        "sample_size": int(len(cerradas)),
+        "sample_size": int(len(lecturas_validas)),
         "hit_rate": round(aciertos * 100, 2),
         "roi": roi,
         "min_edge": min_edge,
@@ -818,9 +891,10 @@ def resumen_historial():
             "profit_neto": 0.0,
         }
 
-    aciertos = int((cerradas["ganador"] == cerradas["resultado_real"]).sum())
-    fallos = int(len(cerradas) - aciertos)
-    hit_rate = round((aciertos / len(cerradas)) * 100, 2) if len(cerradas) else 0.0
+    apuestas_reales = cerradas[cerradas.get("es_apuesta_real", False)].copy()
+    aciertos = int((apuestas_reales["estado_pick"] == "Acierto").sum())
+    fallos = int((apuestas_reales["estado_pick"] == "Fallo").sum())
+    hit_rate = round((aciertos / len(apuestas_reales)) * 100, 2) if len(apuestas_reales) else 0.0
     profit_neto = round(float(cerradas["profit"].sum()), 2) if "profit" in cerradas.columns else 0.0
     perfiles_segmento, resumenes_segmento = construir_perfiles_segmento()
     segmentos_decision = _resumen_segmento(cerradas, "decision_simple", min_muestra=1)
