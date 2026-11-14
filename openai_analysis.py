@@ -62,8 +62,28 @@ def _get_openai_model():
     return "gpt-5-mini"
 
 
+def _get_secret_flag(name, default=False):
+    raw = os.getenv(name)
+    if raw is None:
+        try:
+            import streamlit as st
+
+            raw = st.secrets.get(name)
+        except Exception:
+            raw = None
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
+
+
 def openai_analisis_disponible():
-    return OpenAI is not None and bool(_get_openai_api_key())
+    # The paid analyst is opt-in. The local model remains fully functional
+    # without an OpenAI account, key, or API credits.
+    return (
+        OpenAI is not None
+        and bool(_get_openai_api_key())
+        and _get_secret_flag("ENABLE_OPENAI_ANALYST", default=False)
+    )
 
 
 def _default_ai_columns(df):
@@ -394,7 +414,7 @@ def aplicar_filtro_dinero_real(df, auditoria_ia_disponible=False):
 def analizar_partidos_con_openai(df, max_partidos=12):
     vista = _default_ai_columns(df)
 
-    if vista.empty or OpenAI is None:
+    if vista.empty or not openai_analisis_disponible():
         return vista
 
     api_key = _get_openai_api_key()
