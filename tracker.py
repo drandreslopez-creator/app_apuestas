@@ -1,11 +1,17 @@
 import pandas as pd
+import json
 import os
 import sqlite3
 from datetime import datetime
 
+import requests
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ARCHIVO = os.path.join(BASE_DIR, "historial.csv")
 DB_PATH = os.path.join(BASE_DIR, "app_apuestas.db")
+SUPABASE_TABLE = "ai_predictor_history"
+_CLOUD_HISTORY_LOADED = False
+_CLOUD_STATUS = "local"
 
 COLUMNAS_HISTORIAL = [
     "fixture_id",
@@ -55,6 +61,108 @@ COLUMNAS_HISTORIAL = [
 ESTADOS_EN_VIVO = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
 ESTADOS_NO_INICIADOS = {"NS", "TBD", "PST"}
 ESTADOS_CERRADOS = {"FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}
+
+
+def _get_setting(name):
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+def _supabase_config():
+    url = str(_get_setting("SUPABASE_URL") or "").strip().rstrip("/")
+    key = str(_get_setting("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not url or not key:
+        return None
+    return {"url": url, "key": key}
+
+
+def estado_persistencia():
+    """Expose a safe status label without ever exposing cloud credentials."""
+    if _supabase_config() is None:
+        return "Historial local"
+    return "Historial persistente" if _CLOUD_STATUS == "persistent" else "Historial local (nube pendiente)"
+
+
+def _json_safe(value):
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def _cargar_historial_nube(conn):
+    global _CLOUD_HISTORY_LOADED, _CLOUD_STATUS
+    if _CLOUD_HISTORY_LOADED:
+        return
+    _CLOUD_HISTORY_LOADED = True
+    config = _supabase_config()
+    if config is None:
+        return
+
+    try:
+        response = requests.get(
+            f"{config['url']}/rest/v1/{SUPABASE_TABLE}",
+            params={"select": "unique_key,payload"},
+            headers={"apikey": config["key"], "Authorization": f"Bearer {config['key']}"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        payloads = [item.get("payload") for item in rows if isinstance(item.get("payload"), dict)]
+        if payloads:
+            remoto = _asegurar_columnas(pd.DataFrame(payloads))
+            remoto["unique_key"] = remoto.apply(_build_unique_key, axis=1)
+            remoto = remoto.drop_duplicates(subset=["unique_key"], keep="last")
+            conn.executemany(
+                "INSERT OR IGNORE INTO historial (unique_key, fixture_id, fecha_partido, hora_partido, liga, grupo_liga, partido, ganador, mercado, confianza, estado_partido, fuente_cuotas, value_local, value_empate, value_visitante, prob_local, prob_empate, prob_visitante, ai_score, ai_decision, ai_resumen, mejor_edge_pct, ev_por_unidad, banda_confianza, banda_edge, cuota_local, cuota_empate, cuota_visitante, stake, stake_num, fecha_guardado, resultado_real, fecha_cierre_resultado, estado_final_consulta, fuente_partidos, prediccion_simple, decision_simple, razon_simple, pick_recomendado, mercado_recomendado, probabilidad_pick, riesgo_pick, odds_source_pick) VALUES (:unique_key, :fixture_id, :fecha_partido, :hora_partido, :liga, :grupo_liga, :partido, :ganador, :mercado, :confianza, :estado_partido, :fuente_cuotas, :value_local, :value_empate, :value_visitante, :prob_local, :prob_empate, :prob_visitante, :ai_score, :ai_decision, :ai_resumen, :mejor_edge_pct, :ev_por_unidad, :banda_confianza, :banda_edge, :cuota_local, :cuota_empate, :cuota_visitante, :stake, :stake_num, :fecha_guardado, :resultado_real, :fecha_cierre_resultado, :estado_final_consulta, :fuente_partidos, :prediccion_simple, :decision_simple, :razon_simple, :pick_recomendado, :mercado_recomendado, :probabilidad_pick, :riesgo_pick, :odds_source_pick)",
+                remoto.to_dict(orient="records"),
+            )
+            conn.commit()
+        _CLOUD_STATUS = "persistent"
+    except (requests.RequestException, ValueError, sqlite3.Error):
+        _CLOUD_STATUS = "unavailable"
+
+
+def _guardar_historial_nube(df):
+    global _CLOUD_STATUS
+    config = _supabase_config()
+    if config is None or df.empty:
+        return False
+
+    registros = []
+    for row in df.to_dict(orient="records"):
+        unique_key = str(row.get("unique_key") or _build_unique_key(row))
+        payload = {key: _json_safe(value) for key, value in row.items() if key != "unique_key"}
+        registros.append({"unique_key": unique_key, "payload": payload})
+    try:
+        response = requests.post(
+            f"{config['url']}/rest/v1/{SUPABASE_TABLE}",
+            params={"on_conflict": "unique_key"},
+            headers={
+                "apikey": config["key"],
+                "Authorization": f"Bearer {config['key']}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates,return=minimal",
+            },
+            data=json.dumps(registros, ensure_ascii=False),
+            timeout=8,
+        )
+        response.raise_for_status()
+        _CLOUD_STATUS = "persistent"
+        return True
+    except (requests.RequestException, TypeError, ValueError):
+        _CLOUD_STATUS = "unavailable"
+        return False
 
 
 def _prediccion_simple_desde_ganador(ganador):
@@ -213,6 +321,8 @@ def init_storage():
             if columna not in columnas_actuales:
                 conn.execute(f"ALTER TABLE historial ADD COLUMN {columna} {tipo}")
 
+        _cargar_historial_nube(conn)
+
         total = conn.execute("SELECT COUNT(*) FROM historial").fetchone()[0]
         if total == 0 and os.path.exists(ARCHIVO):
             try:
@@ -319,6 +429,7 @@ def _upsert_historial(df, conn=None, preservar_snapshot=False):
     after = conn.execute("SELECT COUNT(*) FROM historial").fetchone()[0]
     changed = conn.total_changes > 0 or before != after
     conn.commit()
+    _guardar_historial_nube(df_guardar)
 
     if close_conn:
         conn.close()
