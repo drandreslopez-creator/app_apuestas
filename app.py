@@ -8,6 +8,7 @@ from tracker import (
     calcular_calibracion_modelo,
     guardar_resultado,
     resumen_historial,
+    estado_persistencia,
 )
 from model import analizar_partidos
 from api_data import get_matches_api, get_last_api_status
@@ -876,6 +877,7 @@ def render_dashboard():
         st.caption("Socio analista IA externo activo como apoyo extra.")
     else:
         st.caption("Motor experto local activo. El analista IA externo es opcional.")
+    st.caption(estado_persistencia())
 
     tab1, tab2 = st.tabs(["Partidos por liga", "Historial"])
 
