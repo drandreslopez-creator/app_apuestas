@@ -10,7 +10,7 @@ from tracker import (
     resumen_historial,
     estado_persistencia,
 )
-from model import analizar_partidos
+from model import analizar_partidos, construir_top_picks_pro, construir_combinada_pro
 from api_data import get_matches_api, get_last_api_status
 from openai_analysis import (
     analizar_partidos_con_openai,
@@ -466,6 +466,9 @@ def render_partido(row):
     prob_local_1x2 = row.get("prob_local")
     prob_empate_1x2 = row.get("prob_empate")
     prob_visitante_1x2 = row.get("prob_visitante")
+    prob_over_25 = row.get("prob_over_25")
+    prob_btts = row.get("prob_btts")
+    marcador_probable = str(row.get("marcador_probable", "") or "").strip()
     team_strength_local = row.get("team_strength_local")
     team_strength_visitante = row.get("team_strength_visitante")
     tpi_local = row.get("tpi_local")
@@ -559,6 +562,12 @@ def render_partido(row):
         )
         st.markdown(
             f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:4px;'><b>1X2:</b> Local {_fmt_pct(prob_local_1x2)} · Empate {_fmt_pct(prob_empate_1x2)} · Visitante {_fmt_pct(prob_visitante_1x2)}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='font-size:11px;color:{COLOR_TEXT_MUTED};margin-top:3px;'><b>Goles:</b> Más de 2.5 {_fmt_pct(prob_over_25)} · Ambos marcan {_fmt_pct(prob_btts)}"
+            + (f" · Marcador probable {marcador_probable}" if marcador_probable else "")
+            + "</div>",
             unsafe_allow_html=True,
         )
         if consenso:
@@ -879,6 +888,34 @@ def render_dashboard():
         st.caption("Motor experto local activo. El analista IA externo es opcional.")
     st.caption(estado_persistencia())
 
+    top_picks_pro = construir_top_picks_pro(resultados, max_picks=3)
+    st.markdown("### TOP PICKS PRO")
+    if top_picks_pro.empty:
+        st.caption("No hay apuestas con cuota real, edge y EV positivos suficientes en esta carga.")
+    else:
+        columnas_top = st.columns(len(top_picks_pro))
+        for posicion, (_, pick) in enumerate(top_picks_pro.iterrows(), start=1):
+            with columnas_top[posicion - 1]:
+                st.markdown(f"**TOP {posicion} · {pick['partido']}**")
+                st.markdown(f"{pick['pick_recomendado']} · {pick['mercado_recomendado']}")
+                st.caption(
+                    f"Prob. {pick['probabilidad_pick']}% · Cuota {pick['cuota_pick']} · "
+                    f"EV {pick['ev_pick']}% · {pick['riesgo_simple']}"
+                )
+        combinada = construir_combinada_pro(top_picks_pro)
+        if combinada:
+            with st.expander("Combinada PRO", expanded=False):
+                for seleccion in combinada["selecciones"]:
+                    st.write(
+                        f"{seleccion['partido']}: {seleccion['pick_recomendado']} "
+                        f"(cuota {seleccion['cuota_pick']})"
+                    )
+                st.caption(
+                    f"Cuota combinada {combinada['cuota_combinada']} · "
+                    f"Probabilidad conjunta {combinada['probabilidad_conjunta']}% · "
+                    f"EV {combinada['ev_conjunto']}% · {combinada['riesgo']}"
+                )
+
     tab1, tab2 = st.tabs(["Partidos por liga", "Historial"])
 
     with tab1:
@@ -944,6 +981,22 @@ def render_dashboard():
             st.metric("Profit Apostar", f"{metricas_apostar.get('profit', 0)}u")
         with learn3:
             st.metric("Profit Mirar", f"{metricas_mirar.get('profit', 0)}u")
+
+        calibration1, calibration2, calibration3 = st.columns(3)
+        muestra_calibracion = int(stats_historial.get("muestra_calibracion", 0) or 0)
+        with calibration1:
+            brier = stats_historial.get("brier_score")
+            st.metric("Brier Score", f"{brier:.4f}" if brier is not None and muestra_calibracion >= 30 else "Muestra insuficiente")
+        with calibration2:
+            log_loss = stats_historial.get("log_loss")
+            st.metric("Log Loss", f"{log_loss:.4f}" if log_loss is not None and muestra_calibracion >= 30 else "Muestra insuficiente")
+        with calibration3:
+            st.metric("Drawdown máximo", f"{stats_historial.get('max_drawdown', 0)}u")
+
+        tabla_calibracion = stats_historial.get("tabla_calibracion")
+        if tabla_calibracion is not None and not tabla_calibracion.empty:
+            st.markdown("### Calibración de probabilidades")
+            st.dataframe(tabla_calibracion, use_container_width=True, hide_index=True)
 
         st.markdown("### Validación rápida")
         segmentos_decision = stats_historial.get("segmentos_decision")
