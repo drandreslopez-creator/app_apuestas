@@ -89,13 +89,46 @@ def normalizar_forma(forma):
     return max(min(forma_centrada * 0.18, 0.18), -0.18)
 
 
-def estimar_lambdas(row):
-    base_local = max(float(row["goles_local"]), 0.2)
-    base_visitante = max(float(row["goles_visitante"]), 0.2)
+def _numero_positivo(row, *keys, default=None):
+    for key in keys:
+        try:
+            value = float(row.get(key))
+            if np.isfinite(value) and value > 0:
+                return value
+        except (TypeError, ValueError):
+            continue
+    return default
 
-    ajuste_forma_local = normalizar_forma(row.get("forma_local", 15))
-    ajuste_forma_visitante = normalizar_forma(row.get("forma_visitante", 15))
-    ventaja_localia = 0.18 if row.get("localia", 1) else 0.0
+
+def estimar_lambdas(row):
+    """Estimate expected goals from the best available attacking evidence.
+
+    API-Football/ESPN do not always provide xG. When supplied, xG/xGA is used
+    as a stabilising input; otherwise the provider's pre-match attack estimate
+    remains the source of truth rather than inventing an xG series.
+    """
+    base_local = _numero_positivo(row, "goles_local", default=1.15)
+    base_visitante = _numero_positivo(row, "goles_visitante", default=1.02)
+    xg_local = _numero_positivo(row, "xg_local", "xg_for_local")
+    xg_visitante = _numero_positivo(row, "xg_visitante", "xg_for_visitante")
+    xga_local = _numero_positivo(row, "xga_local", "xg_against_local")
+    xga_visitante = _numero_positivo(row, "xga_visitante", "xg_against_visitante")
+
+    if xg_local:
+        base_local = 0.65 * base_local + 0.35 * xg_local
+    if xg_visitante:
+        base_visitante = 0.65 * base_visitante + 0.35 * xg_visitante
+    if xga_visitante:
+        base_local = 0.70 * base_local + 0.30 * xga_visitante
+    if xga_local:
+        base_visitante = 0.70 * base_visitante + 0.30 * xga_local
+
+    # Providers already deliver pre-match goal expectations after applying
+    # form and home context. Applying them twice was inflating home favorites.
+    preajustado = bool(row.get("lambdas_preajustadas", False))
+    ajuste_forma_local = 0.0 if preajustado else normalizar_forma(row.get("forma_local", 15))
+    ajuste_forma_visitante = 0.0 if preajustado else normalizar_forma(row.get("forma_visitante", 15))
+    ventaja_localia = 0.0 if preajustado else (0.18 if row.get("localia", 1) else 0.0)
 
     lam_local = base_local * (1 + ajuste_forma_local) + ventaja_localia
     lam_visitante = base_visitante * (1 + ajuste_forma_visitante)
@@ -119,6 +152,54 @@ def matriz_probabilidades(lam_local, lam_visitante, max_goles=None):
         matriz = matriz / total
 
     return matriz
+
+
+def aplicar_dixon_coles(matriz, lam_local, lam_visitante, rho=-0.06):
+    """Correct the low-score dependence that independent Poisson misses."""
+    ajustada = np.array(matriz, dtype=float, copy=True)
+    if ajustada.shape[0] < 2 or ajustada.shape[1] < 2:
+        return ajustada
+
+    factores = {
+        (0, 0): 1 - (lam_local * lam_visitante * rho),
+        (0, 1): 1 + (lam_local * rho),
+        (1, 0): 1 + (lam_visitante * rho),
+        (1, 1): 1 - rho,
+    }
+    for (local, visitante), factor in factores.items():
+        ajustada[local, visitante] *= max(float(factor), 0.01)
+
+    total = ajustada.sum()
+    return ajustada / total if total > 0 else matriz
+
+
+def recalibrar_matriz_1x2(matriz, prob_local, prob_empate, prob_visitante):
+    """Reweight one score matrix to the calibrated 1X2 marginals.
+
+    This keeps every derived market (goals, BTTS, team goals and scorelines)
+    coherent with the final 1X2 probabilities instead of mixing models.
+    """
+    objetivo = np.array([prob_local, prob_empate, prob_visitante], dtype=float)
+    objetivo = np.clip(objetivo, 0.0001, None)
+    objetivo = objetivo / objetivo.sum()
+    base_local, base_empate, base_visitante = calcular_1x2(matriz)
+    bases = [base_local, base_empate, base_visitante]
+    factores = [objetivo[i] / max(bases[i], 1e-12) for i in range(3)]
+    ajustada = np.array(matriz, dtype=float, copy=True)
+    for i in range(ajustada.shape[0]):
+        for j in range(ajustada.shape[1]):
+            ajustada[i, j] *= factores[0] if i > j else factores[1] if i == j else factores[2]
+    total = ajustada.sum()
+    return ajustada / total if total > 0 else matriz
+
+
+def marcadores_probables(matriz, limite=3):
+    candidatos = [
+        (i, j, float(matriz[i, j]))
+        for i in range(matriz.shape[0])
+        for j in range(matriz.shape[1])
+    ]
+    return sorted(candidatos, key=lambda item: item[2], reverse=True)[:limite]
 
 
 def calcular_1x2(matriz):
@@ -181,6 +262,8 @@ def calcular_mercados_adicionales(matriz):
         "btts": btts,
         "local_anota": local_anota,
         "visitante_anota": visitante_anota,
+        "local_anota_2": float(matriz[2:, :].sum()),
+        "visitante_anota_2": float(matriz[:, 2:].sum()),
     }
 
 
@@ -219,6 +302,8 @@ def validar_coherencia_mercados(prob_local, prob_empate, prob_visitante, mercado
     ensure_min("visitante_empate", prob_empate, "Visitante o empate no puede ser menor que empate")
     ensure_min("local_anota", prob_local, "Local anota 1+ no puede ser menor que gana local")
     ensure_min("visitante_anota", prob_visitante, "Visitante anota 1+ no puede ser menor que gana visitante")
+    ensure_max("local_anota_2", val("local_anota"), "Local anota 2+ no puede superar local anota 1+")
+    ensure_max("visitante_anota_2", val("visitante_anota"), "Visitante anota 2+ no puede superar visitante anota 1+")
     ensure_min("gana_cualquiera", prob_local, "Gana cualquiera no puede ser menor que gana local")
     ensure_min("gana_cualquiera", prob_visitante, "Gana cualquiera no puede ser menor que gana visitante")
     ensure_min("over_15", val("over_25"), "Over 1.5 no puede ser menor que Over 2.5")
@@ -235,6 +320,8 @@ def validar_coherencia_mercados(prob_local, prob_empate, prob_visitante, mercado
         "btts",
         "local_anota",
         "visitante_anota",
+        "local_anota_2",
+        "visitante_anota_2",
     ]:
         ensure_min(key, 0.0, "Probabilidad negativa")
         ensure_max(key, 1.0, "Probabilidad mayor a 100%")
@@ -480,17 +567,26 @@ def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitant
     log_empate = np.log(max(base["empate"], eps))
     log_visitante = np.log(max(base["visitante"], eps))
 
-    if _confidence_rank_tpi(confidence_general) <= 1:
-        alpha = 0.18
+    confidence_rank = _confidence_rank_tpi(confidence_general)
+    if confidence_rank <= 1:
+        alpha = 0.12
         draw_penalty = 0.02
         tipo_ajuste = "ajuste limitado por baja confianza TPI"
+    elif confidence_rank == 2 and abs(diff) >= 20:
+        alpha = 0.32
+        draw_penalty = 0.05
+        tipo_ajuste = "ajuste moderado por TPI parcial"
+    elif confidence_rank == 2:
+        alpha = 0.16
+        draw_penalty = 0.03
+        tipo_ajuste = "ajuste suave por TPI parcial"
     elif abs(diff) >= 40:
-        alpha = 1.35
-        draw_penalty = 0.22
+        alpha = 0.85
+        draw_penalty = 0.14
         tipo_ajuste = "ajuste muy fuerte"
     elif abs(diff) >= 20:
-        alpha = 0.90
-        draw_penalty = 0.12
+        alpha = 0.58
+        draw_penalty = 0.08
         tipo_ajuste = "ajuste fuerte"
     else:
         alpha = 0.45
@@ -509,6 +605,17 @@ def calibrar_probabilidades_1x2(row_dict, prob_local, prob_empate, prob_visitant
         "empate": round(float(probs[1]), 6),
         "visitante": round(float(probs[2]), 6),
     }
+
+    # Partial club data must not turn a 67% base signal into a fictitious 87%
+    # certainty. The permitted movement scales with the TPI evidence quality.
+    max_shift = {0: 0.02, 1: 0.04, 2: 0.10, 3: 0.18}.get(confidence_rank, 0.04)
+    max_raw_shift = max(abs(ajustado[key] - base[key]) for key in base)
+    if max_raw_shift > max_shift:
+        weight = max_shift / max_raw_shift
+        ajustado = {
+            key: round(base[key] + ((ajustado[key] - base[key]) * weight), 6)
+            for key in base
+        }
 
     # La localía no puede compensar diferencias estructurales extremas.
     if _confidence_rank_tpi(confidence_general) >= 2 and diff <= -30 and ajustado["local"] >= ajustado["visitante"]:
@@ -2733,6 +2840,60 @@ def seleccionar_cartera_ia(df, max_picks=5):
     return pd.DataFrame(seleccionados)
 
 
+def construir_top_picks_pro(df, max_picks=3):
+    """Return independent, real-odds opportunities only.
+
+    One selection per match prevents a local win and local goals pick from
+    being presented as two independent opportunities.
+    """
+    if df.empty:
+        return pd.DataFrame()
+    vista = df.copy()
+    for col in ["probabilidad_pick", "cuota_pick", "edge_pick", "ev_pick", "score_final", "confianza"]:
+        if col not in vista.columns:
+            vista[col] = 0.0
+        else:
+            vista[col] = pd.to_numeric(vista[col], errors="coerce").fillna(0)
+    candidatas = vista[
+        vista["decision_simple"].eq("Apostar")
+        & vista["odds_source_pick"].eq("real")
+        & vista["probabilidad_pick"].ge(55)
+        & vista["edge_pick"].gt(0)
+        & vista["ev_pick"].gt(0)
+        & ~vista["riesgo_simple"].eq("Riesgo alto")
+    ].copy()
+    if candidatas.empty:
+        return candidatas
+    candidatas = candidatas.sort_values(
+        by=["score_final", "ev_pick", "edge_pick", "probabilidad_pick", "confianza"],
+        ascending=False,
+    )
+    return candidatas.drop_duplicates(subset=["fixture_id"], keep="first").head(max_picks).reset_index(drop=True)
+
+
+def construir_combinada_pro(top_picks, max_selecciones=3):
+    """Build a small accumulator from distinct fixtures with verified odds."""
+    if top_picks is None or len(top_picks) < 2:
+        return None
+    picks = top_picks.head(max_selecciones).copy()
+    cuotas = pd.to_numeric(picks["cuota_pick"], errors="coerce")
+    probs = pd.to_numeric(picks["probabilidad_pick"], errors="coerce") / 100
+    if cuotas.isna().any() or probs.isna().any() or (cuotas <= 1).any() or (probs <= 0).any():
+        return None
+    cuota_combinada = float(cuotas.prod())
+    # Different fixtures are approximately independent; retain a small model
+    # uncertainty haircut rather than overstating the accumulator probability.
+    prob_conjunta = float(probs.prod() * 0.98)
+    ev_conjunto = (prob_conjunta * cuota_combinada) - 1
+    return {
+        "selecciones": picks[["partido", "pick_recomendado", "cuota_pick", "probabilidad_pick"]].to_dict(orient="records"),
+        "cuota_combinada": round(cuota_combinada, 2),
+        "probabilidad_conjunta": round(prob_conjunta * 100, 1),
+        "ev_conjunto": round(ev_conjunto * 100, 2),
+        "riesgo": "Riesgo alto",
+    }
+
+
 def construir_plan_banca(df, bankroll, riesgo_diario_pct=3.0, max_riesgo_pick_pct=1.0, max_picks=5):
     if df.empty:
         return pd.DataFrame(), {
@@ -2816,6 +2977,7 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         lam_local, lam_visitante = estimar_lambdas(row)
 
         matriz = matriz_probabilidades(lam_local, lam_visitante)
+        matriz = aplicar_dixon_coles(matriz, lam_local, lam_visitante)
 
         prob_local_base, prob_empate_base, prob_visitante_base = calcular_1x2(matriz)
         probs_ajustadas, meta_ajuste_1x2 = calibrar_probabilidades_1x2(
@@ -2833,6 +2995,7 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
         prob_local = probs_auditadas["local"]
         prob_empate = probs_auditadas["empate"]
         prob_visitante = probs_auditadas["visitante"]
+        matriz = recalibrar_matriz_1x2(matriz, prob_local, prob_empate, prob_visitante)
         over, under = calcular_over_under(matriz)
         mercados_extra = calcular_mercados_adicionales(matriz)
         mercados_extra["local_empate"] = prob_local + prob_empate
@@ -2844,6 +3007,8 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             prob_visitante,
             mercados_extra,
         )
+        scorelines = marcadores_probables(matriz)
+        marcador_probable = f"{scorelines[0][0]}-{scorelines[0][1]}" if scorelines else ""
 
         odds_source = "real" if _tiene_cuotas_reales_1x2(row) else "estimated"
         cuota_local_modelo = float(row.get("cuota_local", 0) or 0) if odds_source == "real" else _fair_odds(prob_local * 100)
@@ -3130,6 +3295,13 @@ def analizar_partidos(df, calibracion=None, perfil_riesgo="equilibrado"):
             "prob_btts": round(mercados_extra["btts"] * 100, 1),
             "prob_local_anota": round(mercados_extra["local_anota"] * 100, 1),
             "prob_visitante_anota": round(mercados_extra["visitante_anota"] * 100, 1),
+            "prob_local_anota_2": round(mercados_extra["local_anota_2"] * 100, 1),
+            "prob_visitante_anota_2": round(mercados_extra["visitante_anota_2"] * 100, 1),
+            "marcador_probable": marcador_probable,
+            "marcadores_probables": ", ".join(
+                f"{local}-{visitante} ({prob * 100:.1f}%)"
+                for local, visitante, prob in scorelines
+            ),
             "auditoria_inconsistencias": len(incoherencias_mercado),
             "auditoria_partido_afectado": bool(incoherencias_mercado),
             "auditoria_mercados_corregidos": ", ".join(sorted({item["mercado"] for item in incoherencias_mercado})) if incoherencias_mercado else "",
