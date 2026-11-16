@@ -1586,11 +1586,11 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
             )
             return df_cache_rapido
 
-        df_cache = _cargar_cache_partidos()
+        df_cache = _filtrar_cache_vigente(_cargar_cache_partidos())
         if not df_cache.empty:
             _set_last_api_status(
                 False,
-                "La API principal no devolvió partidos. Se cargó el último cache local disponible.",
+                "La API principal no devolvió partidos. Se cargó una caché vigente.",
                 " | ".join(api_errors + espn_errors) if (api_errors or espn_errors) else "Sin respuesta útil de los proveedores.",
                 used_cache=True,
                 source="cache_local",
@@ -1599,7 +1599,7 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
 
         _set_last_api_status(
             False,
-            "No fue posible cargar partidos desde los proveedores en vivo y no hay cache local disponible.",
+            "No hay partidos vigentes disponibles desde los proveedores. La caché anterior fue descartada.",
             " | ".join(api_errors + espn_errors) if (api_errors or espn_errors) else "Sin respuesta útil de los proveedores.",
             used_cache=False,
             source="providers_unavailable",
@@ -1619,11 +1619,11 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
             )
             return df_espn
 
-        df_cache = _cargar_cache_partidos()
+        df_cache = _filtrar_cache_vigente(_cargar_cache_partidos())
         if not df_cache.empty:
             _set_last_api_status(
                 False,
-                "Fallo la carga en vivo. Se usó cache local.",
+                "Falló la carga en vivo. Se usó una caché vigente.",
                 str(exc),
                 used_cache=True,
                 source="cache_local",
@@ -1631,7 +1631,7 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
             return df_cache.head(limit).reset_index(drop=True)
         _set_last_api_status(
             False,
-            "Fallo la carga en vivo y no hay cache local.",
+            "Falló la carga en vivo y no hay caché vigente.",
             str(exc),
             used_cache=False,
             source="providers_unavailable",
