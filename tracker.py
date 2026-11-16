@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import json
 import os
 import sqlite3
@@ -668,6 +669,75 @@ def _resultado_prediccion(row):
     return "Acierto" if prediccion == row.get("resultado_real") else "Fallo"
 
 
+def _metricas_probabilisticas(cerradas):
+    """Evaluate the saved 1X2 forecast without treating it as betting ROI."""
+    if cerradas.empty:
+        return {"muestra": 0, "brier_score": None, "log_loss": None, "calibracion": pd.DataFrame()}
+
+    filas = []
+    for _, row in cerradas.iterrows():
+        try:
+            probs = np.array([
+                float(row.get("prob_local") or 0) / 100,
+                float(row.get("prob_empate") or 0) / 100,
+                float(row.get("prob_visitante") or 0) / 100,
+            ])
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(probs).all() or probs.sum() <= 0:
+            continue
+        probs = np.clip(probs / probs.sum(), 1e-8, 1.0)
+        resultado = str(row.get("resultado_real") or "")
+        indice = {"Gana local": 0, "Empate": 1, "Gana visitante": 2}.get(resultado)
+        if indice is None:
+            continue
+        real = np.zeros(3)
+        real[indice] = 1.0
+        top = float(probs.max())
+        filas.append({
+            "brier": float(np.mean((probs - real) ** 2)),
+            "log_loss": float(-np.log(probs[indice])),
+            "prob_top": top,
+            "acierto_top": int(int(probs.argmax()) == indice),
+        })
+    if not filas:
+        return {"muestra": 0, "brier_score": None, "log_loss": None, "calibracion": pd.DataFrame()}
+
+    metricas = pd.DataFrame(filas)
+    metricas["banda"] = pd.cut(
+        metricas["prob_top"],
+        bins=[0, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0],
+        labels=["0-40%", "40-50%", "50-60%", "60-70%", "70-80%", "80-100%"],
+        include_lowest=True,
+    )
+    calibracion = metricas.groupby("banda", observed=False).agg(
+        partidos=("acierto_top", "size"),
+        prob_media=("prob_top", "mean"),
+        acierto_real=("acierto_top", "mean"),
+    ).reset_index()
+    calibracion = calibracion[calibracion["partidos"] > 0].copy()
+    calibracion["prob_media"] = (calibracion["prob_media"] * 100).round(1)
+    calibracion["acierto_real"] = (calibracion["acierto_real"] * 100).round(1)
+    return {
+        "muestra": int(len(metricas)),
+        "brier_score": round(float(metricas["brier"].mean()), 4),
+        "log_loss": round(float(metricas["log_loss"].mean()), 4),
+        "calibracion": calibracion,
+    }
+
+
+def _max_drawdown(cerradas):
+    if cerradas.empty or "profit" not in cerradas.columns:
+        return 0.0
+    apuestas = cerradas[cerradas.get("es_apuesta_real", False)].copy()
+    if apuestas.empty:
+        return 0.0
+    apuestas = apuestas.sort_values(by="fecha_partido", na_position="last")
+    curva = pd.to_numeric(apuestas["profit"], errors="coerce").fillna(0).cumsum()
+    pico = curva.cummax()
+    return round(float((curva - pico).min()), 2)
+
+
 def cargar_historial():
     init_storage()
 
@@ -1053,6 +1123,7 @@ def resumen_historial():
         }
         pred_real = cerradas["prediccion_simple"].map(pred_map).fillna("No bet")
         pred_simple_acierto = round(float((pred_real == cerradas["resultado_real"]).mean() * 100), 2)
+    metricas_probabilisticas = _metricas_probabilisticas(cerradas)
 
     return {
         "historial": df,
@@ -1063,6 +1134,11 @@ def resumen_historial():
         "hit_rate": hit_rate,
         "profit_neto": profit_neto,
         "precision_prediccion_simple": pred_simple_acierto,
+        "brier_score": metricas_probabilisticas["brier_score"],
+        "log_loss": metricas_probabilisticas["log_loss"],
+        "muestra_calibracion": metricas_probabilisticas["muestra"],
+        "tabla_calibracion": metricas_probabilisticas["calibracion"],
+        "max_drawdown": _max_drawdown(cerradas),
         "perfiles_segmento": perfiles_segmento,
         "segmentos_liga": resumenes_segmento.get("liga", pd.DataFrame()),
         "segmentos_mercado": resumenes_segmento.get("mercado", pd.DataFrame()),
