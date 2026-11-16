@@ -4,7 +4,17 @@ import re
 import unicodedata
 from functools import lru_cache
 
-API_KEY = os.getenv("ODDS_API_KEY", "174e13ddef0e3b3707f4c37a63e589e9")
+
+def _get_secret(name):
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        return st.secrets.get(name)
+    except Exception:
+        return None
 
 STOPWORDS = {
     "fc", "cf", "sc", "ac", "cd", "club", "de", "the", "fk", "if",
@@ -64,10 +74,11 @@ def _extraer_cuotas_game(game):
 
 @lru_cache(maxsize=1)
 def _get_odds_catalog():
-    if not API_KEY:
+    api_key = _get_secret("ODDS_API_KEY")
+    if not api_key:
         return []
 
-    url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?regions=eu&markets=h2h&apiKey={API_KEY}"
+    url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?regions=eu&markets=h2h&apiKey={api_key}"
     try:
         response = requests.get(url, timeout=5)
         data = response.json()
