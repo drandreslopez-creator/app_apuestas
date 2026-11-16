@@ -12,14 +12,25 @@ import pandas as pd
 import requests
 from odds import get_odds
 
-API_KEY = os.getenv("API_SPORTS_KEY", "0dddf668bc3e722a3afda4592a179671")
+
+def _get_secret(name):
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+API_KEY = _get_secret("API_SPORTS_KEY") or ""
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(BASE_DIR, "matches_cache.csv")
 CACHE_FAST_AGE_SECONDS = 300
 
-headers = {
-    "x-apisports-key": API_KEY
-}
+headers = {"x-apisports-key": API_KEY} if API_KEY else {}
 
 TIMEZONE = ZoneInfo("America/Bogota")
 ESTADOS_EN_CURSO = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
@@ -662,6 +673,7 @@ def _fetch_matches_espn(fecha=None, limit=20):
                     "minuto_partido": _minuto_espn(event),
                     "goles_local": goles_local,
                     "goles_visitante": goles_visitante,
+                    "lambdas_preajustadas": True,
                     "forma_local": forma_local,
                     "forma_visitante": forma_visitante,
                     "racha_local": home.get("form"),
@@ -1303,7 +1315,10 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
     api_suspendida = False
 
     try:
-        for fecha_consulta in fechas_consulta:
+        if not API_KEY:
+            api_errors.append("API_SPORTS_KEY no configurada; se usó el respaldo disponible.")
+            api_suspendida = True
+        for fecha_consulta in ([] if not API_KEY else fechas_consulta):
             url = f"https://v3.football.api-sports.io/fixtures?date={fecha_consulta}"
             response = requests.get(url, headers=headers, timeout=3)
             data = response.json()
@@ -1464,6 +1479,7 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
                     "minuto_partido": row.get("minuto_partido", ""),
                     "goles_local": round(goles_local, 2),
                     "goles_visitante": round(goles_visitante, 2),
+                    "lambdas_preajustadas": True,
                     "forma_local": forma_local,
                     "forma_visitante": forma_vis,
                     "racha_local": perfil_local.get("racha", ""),
@@ -1550,7 +1566,6 @@ def get_matches_api(fecha=None, limit=20, incluir_finalizados=None):
         if not df_espn.empty:
             df_espn = _enriquecer_odds_desde_catalogo(df_espn)
             df_espn = _enriquecer_odds_desde_cache(df_espn)
-            df_espn = _enriquecer_odds_desde_catalogo(df_espn)
             _guardar_cache_partidos(df_espn)
             _set_last_api_status(
                 True,
